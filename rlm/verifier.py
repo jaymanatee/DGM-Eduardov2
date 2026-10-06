@@ -19,9 +19,11 @@ validate a JSON document against a schema, check that a date falls in a range.
 
 from __future__ import annotations
 
+import json
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Any
 
 from rlm.rewards import extract_answer, normalize_number
 
@@ -85,3 +87,92 @@ class ExactMatchVerifier(Verifier):
         if predicted is None:
             return False
         return self._normalize(predicted) == self._normalize(expected)
+
+
+# --------------------------------------------------------- IMPLEMENTATION
+
+
+PCT_TOLERANCE = 0.5
+NO_CRITERION = "NINGUNO"
+
+
+class OriginVerifier(Verifier):
+    """Origen preferencial: la respuesta es un JSON con tres campos.
+
+    ``expected`` es el ``answer`` del dataset: el JSON correcto más ``criterios_validos``.
+    Es tolerante con el formato (fences de código, "46,0 %", "true" como texto) y estricto
+    con el contenido: veredicto exacto, criterio dentro de los válidos y porcentaje a ±0,5.
+    """
+
+    name = "origin"
+
+    def __init__(self, pct_tolerance: float = PCT_TOLERANCE):
+        self.pct_tolerance = pct_tolerance
+
+    @staticmethod
+    def _parse_json(text: str) -> dict[str, Any] | None:
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        return data if isinstance(data, dict) else None
+
+    @staticmethod
+    def _as_bool(value: Any) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+            return value.strip().lower() == "true"
+        return None
+
+    @staticmethod
+    def _as_float(value: Any) -> float | None:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value.replace("%", "").replace(",", ".").strip())
+            except ValueError:
+                return None
+        return None
+
+    def check(self, predicted: str | None, expected: str) -> tuple[bool, str]:
+        """Devuelve (correcto, motivo). El motivo sirve para el análisis de fallos."""
+        if predicted is None:
+            return False, "no <answer> block found"
+        truth = self._parse_json(expected)
+        if truth is None:
+            raise ValueError(f"expected no es un JSON válido: {expected!r}")
+        answer = self._parse_json(predicted)
+        if answer is None:
+            return False, "la respuesta no es un JSON válido"
+
+        verdict = self._as_bool(answer.get("originario"))
+        if verdict is None:
+            return False, "falta 'originario' o no es booleano"
+        criterion = answer.get("criterio")
+        if not isinstance(criterion, str):
+            return False, "falta 'criterio' o no es texto"
+        pct = self._as_float(answer.get("pct_no_originario"))
+        if pct is None:
+            return False, "falta 'pct_no_originario' o no es un número"
+
+        if verdict != truth["originario"]:
+            return False, f"veredicto incorrecto: {verdict}"
+        valid = truth["criterios_validos"] if truth["originario"] else [NO_CRITERION]
+        if criterion.strip().upper() not in valid:
+            return False, f"criterio {criterion!r} no válido (válidos: {valid})"
+        if abs(pct - truth["pct_no_originario"]) > self.pct_tolerance + 1e-9:
+            return False, f"porcentaje fuera de ±{self.pct_tolerance}: {pct} vs {truth['pct_no_originario']}"
+        return True, ""
+
+    def is_correct(self, predicted: str | None, expected: str) -> bool:
+        return self.check(predicted, expected)[0]
+
+    def verify(self, completion: str, expected: str) -> VerificationResult:
+        predicted = extract_answer(completion)
+        ok, detail = self.check(predicted, expected)
+        return VerificationResult(ok, predicted, expected, detail)
