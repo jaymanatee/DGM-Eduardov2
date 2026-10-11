@@ -24,7 +24,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
-from rlm.data import build_prompt, load_domain_dataset
+from rlm.data import load_domain_dataset
 from rlm.verifier import NumericVerifier, OriginVerifier, Verifier
 
 VERIFIERS = {"origin": OriginVerifier, "numeric": NumericVerifier}
@@ -147,7 +147,7 @@ def generate_traces(
         batch = problems[start : start + batch_size]
         prompts = [
             tokenizer.apply_chat_template(
-                build_prompt(p["question"]),
+                p["prompt"],
                 tokenize=False,
                 add_generation_prompt=True,
                 enable_thinking=True,  # Qwen3 thinking mode; ignored by other templates
@@ -188,8 +188,9 @@ def generate_traces(
             batch_rows.append(
                 {
                     "problem_idx": start + k // samples,
-                    "question": problem["question"],
+                    "question": problem["prompt"][-1]["content"],
                     "answer": problem["answer"],
+                    "branches": problem.get("branches"),
                     "trace": trace if trace is not None else raw,
                     "verified": verified,
                     "teacher": teacher,

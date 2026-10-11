@@ -1,0 +1,74 @@
+{
+    "question": "Una pyme española exporta a Canadá el producto «bomba centrífuga» (subpartida 8413.70) al amparo del Acuerdo UE-Canadá (CETA). Precio franco fábrica (EXW): 1.120,00 €. Precio FOB: 1.200,00 €.\n\nRegla de origen de la partida 8413: cambio de subpartida (CTSH), salvo a partir de la partida 8482.\n\nReglas generales:\n- Son originarios los materiales de la UE o de Canadá con declaración de proveedor. Los materiales de terceros países, los de origen desconocido y los de la UE o del país socio sin declaración de proveedor se consideran no originarios.\n- Tolerancia: los materiales no originarios que incumplen el cambio de clasificación pueden usarse si su valor total no supera el 10 % del precio EXW. La tolerancia no amplía los umbrales de valor (MaxNOM, RVC).\n- Las operaciones insuficientes (embalaje, etiquetado, pintado, limpieza) por sí solas no confieren origen.\n\nLista de materiales utilizados:\n- juntas de caucho (SA 4016.93): origen UE, 222,66 €, con declaración de proveedor.\n- sello mecánico (SA 8484.20): origen UE, 157,83 €, sin declaración de proveedor.\n- rodamientos (SA 8482.10): origen tercer país, 184,19 €.\n- eje de acero (SA 7228.40): origen UE, 168,74 €, con declaración de proveedor.\n- cuerpo de bomba prefabricado (SA 8413.70): origen tercer país, 106,37 €.\n- partes de bombas (SA 8413.91): origen UE, 198,15 €, con declaración de proveedor.\n\nOperaciones realizadas: fabricación.\n\nDecide si el producto es originario. Da la respuesta final como JSON con las claves \"originario\" (true/false), \"criterio\" (uno de los criterios de la regla que se cumplan: CTH, CTSH, CC, MAXNOM, RVC o WO; NINGUNO si no es originario) y \"pct_no_originario\" (valor total de materiales no originarios sobre el precio EXW, en %, con dos decimales).", 
+    "answer": "{\"originario\": false, \"criterio\": \"NINGUNO\", \"pct_no_originario\": 40.03, \"criterios_validos\": []}", 
+    "params": {
+        "rule_id": "CETA-8413", 
+        "agreement": "CETA", 
+        "product_name": "bomba centrífuga", 
+        "product_code": "841370", 
+        "exw": 1120, 
+        "fob": 1200, 
+        "tolerance_pct": 10, 
+        "operations": ["fabricacion"], 
+        "materials": [
+            {
+                "name": "juntas de caucho", 
+                "code": "401693", 
+                "origin": "UE", 
+                "value": 222.66, 
+                "declared": true
+            }, 
+            {
+                "name": "sello mecánico", 
+                "code": "848420", 
+                "origin": "UE", 
+                "value": 157.83, 
+                "declared": false
+            }, 
+            {
+                "name": "rodamientos", 
+                "code": "848210", 
+                "origin": "TERCERO", 
+                "value": 184.19, 
+                "declared": false
+            }, 
+            {
+                "name": "eje de acero", 
+                "code": "722840", 
+                "origin": "UE", 
+                "value": 168.74, 
+                "declared": true}, 
+            {
+                "name": "cuerpo de bomba prefabricado", 
+                "code": "841370", 
+                "origin": "TERCERO", 
+                "value": 106.37, 
+                "declared": false}, 
+            {
+                "name": "partes de bombas", 
+                "code": "841391", 
+                "origin": "UE", 
+                "value": 198.15, 
+                "declared": true
+            }
+        ]
+    }, 
+    "template_id": 0, 
+    "branches": {
+        "regla": "CETA-8413", 
+        "originario": "False", 
+        "criterio_aplicado": "NINGUNO", 
+        "criterios_validos": "NINGUNO", 
+        "material_misma_partida": "True", 
+        "subdivision_distinta": "False", 
+        "excepcion_partida": "True", 
+        "proveedor_sin_declaracion": "True", 
+        "origen_desconocido": "False", 
+        "operacion_insuficiente": "False", 
+        "tolerancia_usada": "False", 
+        "umbral_exacto": "False", 
+        "tolerancia_no_amplia_maxnom": "False"
+    }, 
+    "split": "train", 
+    "label_source": "generator"
+}
