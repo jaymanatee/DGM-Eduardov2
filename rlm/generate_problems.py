@@ -487,7 +487,8 @@ class OriginGenerator(ProblemGenerator):
             '"originario" (true/false), "criterio" (uno de los criterios de la regla que se '
             "cumplan: CTH, CTSH, CC, MAXNOM, RVC o WO; NINGUNO si no es originario) y "
             '"pct_no_originario" (valor total de materiales no originarios sobre el precio EXW, '
-            "en %, con dos decimales)."
+            'en %, con dos decimales). Si el producto no es originario, "criterio" debe ser '
+            'exactamente "NINGUNO", aunque hayas comprobado otros criterios.'
         )
 
         template_id = rng.randrange(3)
