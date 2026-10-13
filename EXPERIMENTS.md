@@ -27,15 +27,15 @@ problemas sin trazas no se guardan: se regeneran con el generador y la semilla.
 |---|---|---|
 | `E1_trazas_train000-009.jsonl` | 0 a 9 | Piloto E1 |
 | `E2_trazas_train000-255.jsonl` | 0 a 255 | Tirada E2 interrumpida; los 20 primeros son el piloto E2 |
-| `E3_trazas_dirigidos20_max2048.jsonl` | 16 de los 20 dirigidos | Cortado a mano |
+| `E3_trazas_dirigidos20_max2048.jsonl` | 18 de los 20 dirigidos | Cortado a mano |
 | `E4_trazas_dirigidos20_max4096.jsonl` | 12 de los 20 dirigidos | Cortado por falta de memoria |
 | `E5_trazas_dirigidos20.jsonl` | Los 20 dirigidos | Completo |
 | `rlm/data/sft_traces.jsonl` | 0 a 499 | Tirada E6, la que va al SFT: 1.282 trazas válidas de 2.000 |
 
 Los "20 dirigidos" son los problemas 0 a 10, 12, 15, 22, 26, 31, 37, 39, 47 y 49 de `train`:
 los 10 primeros que solo son originarios por un criterio de cambio de clasificación y los 10
-primeros del resto. Se obtienen con el script `pilot_subset.py`, que ya no está en el repositorio:
-su código está en el anexo, al final de este cuaderno.
+primeros del resto. Se obtienen con `uv run python -m rlm.pilot_subset_deprecated` (el script ya
+no se usa en la cadena principal, de ahí el nombre).
 
 Referencias fijas con el enunciado E6 (se actualizan solo si cambia el generador a propósito):
 
@@ -308,11 +308,12 @@ resuelve los casos de cambio de clasificación sin empeorar el resto.
 > - MaxNOM: se cumple si el valor total de los materiales no originarios no supera el porcentaje
 >   indicado del precio que señala la regla.
 
-Para medirlo sin esperar a una tirada entera, escribimos `rlm/pilot_subset.py` (código en el
-anexo), que elige 20
+Para medirlo sin esperar a una tirada entera, escribimos `rlm/pilot_subset.py` (hoy
+`rlm/pilot_subset_deprecated.py`), que elige 20
 problemas de los 256 de la tirada E2: los 10 primeros que solo son originarios por cambio de
 clasificación y los 10 primeros del resto. Así cada resultado se compara con el de esos mismos
-problemas en E2. Piloto con 2.048 tokens; lo cortamos con 16 problemas hechos.
+problemas en E2. Piloto con 2.048 tokens; lo cortamos con 18 problemas hechos. La tabla recoge los
+16 que analizamos en ese momento; el fichero tiene 18 (33 trazas válidas de 72).
 
 **Qué pasó (E3).**
 
@@ -527,12 +528,19 @@ Comparación con E2 sobre los mismos 256 primeros problemas, y sobre los 500 de 
   `docs/datasets.md`, con todas las reglas y todas las trampas representadas. La más escasa es
   la tolerancia, con 25 trazas.
 - El precio está en los productos no originarios (del 71 % al 54 %) y en los `wrong_pct` (297,
-  frente a 26 en los 256 problemas de E2). Por lo visto en la revisión de los 56 primeros
-  problemas, la causa probable es la frase de la tolerancia de E6: el profesor responde con el
-  porcentaje de los materiales que impiden el cambio de clasificación en lugar del de todos los
-  no originarios. No lo hemos comprobado problema a problema en la tirada completa. Esas trazas
-  las rechaza el verificador, así que no contaminan el conjunto; solo reducen su tamaño. También
-  baja `CETA-8413` (CTSH), del 57 % al 41 %, probablemente por la misma causa.
+  frente a 26 en los 256 problemas de E2). Comprobado sobre la tirada completa: en 162 de los
+  297 `wrong_pct`, el porcentaje que da el profesor coincide con el de los materiales no
+  originarios que impiden el cambio de clasificación (los de su capítulo, partida o subpartida),
+  no con el de todos. Es la confusión que introdujo la frase de la tolerancia de E6. Los
+  `wrong_pct` se concentran en `TCA-8414` (151), `CETA-8413` (65) y `UE-JP-8501` (52), las tres
+  reglas con un criterio de clasificación, lo que explica que `CETA-8413` baje del 57 % al 41 %.
+- En los no originarios de los problemas 0 a 255, las trazas válidas bajan de 287 a 216. Unos
+  dos tercios de esa caída son `wrong_pct` (de 16 a 72) y el resto, `wrong_verdict` (de 69 a 99):
+  el profesor da por originarios productos que no lo son, en 57 de los 99 casos con un material
+  de la misma partida. Es el lado opuesto del sesgo de E2: ahora aplica el cambio de clasificación
+  o la tolerancia también cuando no debe.
+- Todas esas trazas las rechaza el verificador, así que no contaminan el conjunto; solo reducen
+  su tamaño.
 - Lección para el diseño: cada frase nueva del enunciado arregló el fallo para el que se escribió
   y pudo abrir otro. Medir sobre los mismos problemas antes y después (los 20 dirigidos) es lo
   que permitió verlo; E6 fue la única versión que no pilotamos, y es la que tiene el efecto
@@ -540,81 +548,3 @@ Comparación con E2 sobre los mismos 256 primeros problemas, y sobre los 500 de 
 
 Repetir con la redacción de la tolerancia de E5 recuperaría parte de los no originarios, pero
 costaría otras 24 horas de GPU y la tolerancia seguiría prácticamente sin resolver. No compensa.
-
----
-
-## Anexo: `pilot_subset.py`
-
-Script que usamos para los pilotos dirigidos de los enunciados E3 a E5. No está en el
-repositorio; para usarlo, guardar este código como `rlm/pilot_subset.py` y ejecutar:
-
-```
-uv run python -m rlm.pilot_subset --out rlm/data/piloto_def.jsonl
-uv run python -m rlm.pilot_subset --trap tolerancia_usada --out rlm/data/piloto_tol.jsonl
-```
-
-Los problemas elegidos son siempre los mismos, pero la huella del fichero cambia con cada versión
-del enunciado, porque cambia el texto. Con el primer comando: `4674dcf7…` con E5 y `c4635d3d…` con E6.
-
-```python
-"""Subconjunto de train para un piloto de destilación dirigido a los casos difíciles.
-
-Entre los N primeros problemas de train elige k problemas difíciles y los k primeros del resto.
-Por defecto, los difíciles son los originarios solo por un criterio de cambio de clasificación
-(CC, CTH o CTSH); con ``--trap`` son los que tienen esa trampa en ``branches``. Son problemas
-de train (misma semilla), así que el resultado se compara problema a problema con una
-destilación anterior sobre esos N.
-
-    uv run python -m rlm.pilot_subset --out rlm/data/piloto_def.jsonl
-    uv run python -m rlm.pilot_subset --trap tolerancia_usada --out rlm/data/piloto_tol.jsonl
-
-Imprime qué problemas de train ha elegido: la fila i del fichero es el problema ``train_idx[i]``.
-"""
-
-from __future__ import annotations
-
-import argparse
-import json
-from pathlib import Path
-
-from rlm.generate_problems import OriginGenerator, Problem, to_jsonl
-
-CLASSIFICATION = {"CC", "CTH", "CTSH"}
-
-
-def is_classification_only(problem: Problem) -> bool:
-    """Originario, y ningún criterio de valor (MaxNOM, RVC) lo hace originario."""
-    truth = json.loads(problem.answer)
-    return truth["originario"] and set(truth["criterios_validos"]) <= CLASSIFICATION
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    parser.add_argument("--from-first", type=int, default=256, help="N primeros de train")
-    parser.add_argument("--k", type=int, default=10, help="problemas de cada grupo")
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--trap", default=None, help="rama de branches que define los difíciles")
-    parser.add_argument("--out", default="rlm/data/piloto_def.jsonl")
-    args = parser.parse_args()
-
-    problems = OriginGenerator().generate(args.from_first, "train", args.seed)
-    if args.trap:
-        is_hard = lambda p: p.branches.get(args.trap) == "True"  # noqa: E731
-    else:
-        is_hard = is_classification_only
-    hard = [i for i, p in enumerate(problems) if is_hard(p)][: args.k]
-    rest = [i for i, p in enumerate(problems) if not is_hard(p)][: args.k]
-    indices = sorted(hard + rest)
-
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(to_jsonl([problems[i] for i in indices], "train"), encoding="utf-8")
-    print(json.dumps({"train_idx": indices, "dificiles": hard, "resto": rest}))
-    print(f"{len(indices)} problemas -> {out}")
-
-
-if __name__ == "__main__":
-    main()
-```
