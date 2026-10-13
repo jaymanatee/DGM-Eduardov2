@@ -20,8 +20,12 @@ API del UK Trade Tariff (``source="placeholder"`` marca las que faltan).
     uv run python -m rlm.generate_problems --n 200  --split test  --out rlm/data/test.jsonl
     uv run python -m rlm.generate_problems --n 100  --split ood   --out rlm/data/test_ood.jsonl
 
-``train`` y ``test`` comparten distribución. El split ``ood`` todavía no está definido
-(reglas al estilo UE-Corea y UE-Mercosur): ``sample_params`` lo dice con un error explícito.
+``train`` y ``test`` comparten distribución. El split ``ood`` es una familia reservada que no
+aparece en ninguno de los dos: otro acuerdo (UE-Mercosur), otras partidas, umbrales y
+combinaciones de criterios distintos, y la mitad de los enunciados con la regla redactada sin
+siglas, al estilo de los protocolos UE-Corea. Vive en ``OOD_RULES`` / ``OOD_PRODUCTS``, aparte de
+``RULES`` / ``PRODUCTS``, para que añadirlo no cambie ni un byte de ``train.jsonl``
+(``tests/test_generate_problems.py`` lo vigila con una huella fija).
 """
 
 from __future__ import annotations
@@ -223,6 +227,99 @@ PRODUCTS: dict[str, ProductTemplate] = {
     ),
 }
 
+# --------------------------------------------------------------------------- split ood (reservado)
+# Familia que NO aparece en train ni en test. Va en diccionarios aparte a propósito: train elige
+# regla con rng.choice(sorted(RULES)), así que una entrada más en RULES cambiaría el sorteo y la
+# misma semilla dejaría de regenerar el mismo train.jsonl. Reglas de relleno, como las de arriba.
+#
+# Qué tiene de nuevo respecto a train:
+#   - acuerdo y partidas que el modelo no ha visto;
+#   - umbrales nuevos (MaxNOM 45 % y 55 %, RVC 60 %; en train solo hay 40 % y 50 %);
+#   - combinaciones nuevas (CC como único criterio, CTSH o MaxNOM, dos partidas excluidas);
+#   - en la mitad de los problemas, la regla redactada sin siglas (``wording = "descriptiva"``).
+
+OOD_AGREEMENTS = {"MERCOSUR": ("Acuerdo de Asociación UE-Mercosur", "Brasil")}
+
+OOD_RULES: dict[str, Rule] = {
+    r.rule_id: r
+    for r in (
+        Rule("MERCOSUR-8708", "8708", "MERCOSUR", (Alt("CTH"), Alt("MAXNOM", pct(45)))),
+        Rule("MERCOSUR-9401", "9401", "MERCOSUR", (Alt("CC"),)),
+        Rule("MERCOSUR-8516", "8516", "MERCOSUR", (Alt("CTSH"), Alt("MAXNOM", pct(55)))),
+        Rule(
+            "MERCOSUR-8481",
+            "8481",
+            "MERCOSUR",
+            (Alt("CTH", excluded_headings=("7307", "8484")), Alt("RVC", pct(60), basis="FOB")),
+        ),
+    )
+}
+
+OOD_PRODUCTS: dict[str, ProductTemplate] = {
+    "MERCOSUR-8708": ProductTemplate(
+        "caja de cambios para automóvil",
+        "870840",
+        (400, 3000),
+        (
+            ("partes de cajas de cambio", "870840"),
+            ("embrague", "870893"),
+            ("engranajes", "848340"),
+            ("carcasa de aluminio fundido", "761699"),
+            ("rodamientos", "848210"),
+            ("juntas y retenes", "401693"),
+            ("sensor de velocidad", "903289"),
+        ),
+    ),
+    "MERCOSUR-9401": ProductTemplate(
+        "silla de oficina giratoria",
+        "940139",
+        (60, 500),
+        (
+            ("partes de asientos", "940199"),
+            ("base de aluminio", "761699"),
+            ("ruedas", "830220"),
+            ("espuma de poliuretano", "392113"),
+            ("tejido de tapizado", "540752"),
+            ("reposabrazos de plástico", "392690"),
+            ("tornillería", "731815"),
+        ),
+    ),
+    "MERCOSUR-8516": ProductTemplate(
+        "calentador eléctrico de agua",
+        "851610",
+        (80, 700),
+        (
+            ("cuba calentadora premontada", "851610"),
+            ("resistencia calentadora", "851680"),
+            ("partes de calentadores", "851690"),
+            ("termostato", "903210"),
+            ("aislante de poliuretano", "392113"),
+            ("cable de alimentación", "854442"),
+            ("válvula de seguridad", "848140"),
+        ),
+    ),
+    "MERCOSUR-8481": ProductTemplate(
+        "válvula de control industrial",
+        "848180",
+        (150, 1500),
+        (
+            ("cuerpo de válvula de fundición", "848190"),
+            ("accesorios de tubería", "730799"),
+            ("juntas metaloplásticas", "848410"),
+            ("actuador eléctrico", "850110"),
+            ("muelle de acero", "732020"),
+            ("posicionador electrónico", "903289"),
+            ("juntas de caucho", "401693"),
+        ),
+    ),
+}
+
+OOD_WORDINGS = ("siglas", "descriptiva")
+
+# Para buscar por id al resolver y redactar, sea cual sea el split. Nunca se muestrea de aquí.
+ALL_RULES = {**RULES, **OOD_RULES}
+ALL_AGREEMENTS = {**AGREEMENTS, **OOD_AGREEMENTS}
+
 ORIGIN_WEIGHTS = (40, 12, 40, 8)  # UE, SOCIO, TERCERO, DESCONOCIDO
 P_DECLARED = 0.85
 P_SAME_HEADING = 0.4
@@ -286,8 +383,97 @@ def describe_alternative(alt: Alt) -> str:
     )
 
 
-def describe_rule(rule: Rule) -> str:
-    return "; o ".join(describe_alternative(alt) for alt in rule.alternatives) + "."
+DESCRIPTIVE_LEVEL = {
+    "CC": ("cualquier capítulo", "el del producto"),
+    "CTH": ("cualquier partida", "la del producto"),
+    "CTSH": ("cualquier subpartida", "la del producto"),
+}
+
+
+def describe_alternative_descriptive(alt: Alt) -> str:
+    """La misma alternativa sin siglas, al estilo de los protocolos UE-Corea. Solo en ``ood``."""
+    if alt.kind == "WO":
+        return "producto obtenido en su totalidad"
+    if alt.kind in DESCRIPTIVE_LEVEL:
+        level, own = DESCRIPTIVE_LEVEL[alt.kind]
+        text = f"fabricación a partir de materiales de {level}, excepto {own}"
+        if alt.excluded_headings:
+            plural = len(alt.excluded_headings) > 1
+            heads = " y ".join(alt.excluded_headings)
+            text += f" y excepto los de {'las partidas' if plural else 'la partida'} {heads}"
+        return text
+    assert alt.threshold is not None
+    basis = "precio franco fábrica" if alt.basis == "EXW" else "precio FOB"
+    if alt.kind == "MAXNOM":
+        return (
+            "fabricación en la que el valor de todos los materiales no originarios utilizados "
+            f"no exceda del {fmt_pct(alt.threshold)} % del {basis} del producto"
+        )
+    return (
+        f"fabricación en la que el valor añadido en la zona, es decir, ({basis} - valor de "
+        f"materiales no originarios) / {basis}, sea al menos del {fmt_pct(alt.threshold)} %"
+    )
+
+
+CLASSIFICATION_NOTES = {
+    "CC": ("cambio de capítulo", "el mismo capítulo (2 primeras cifras del código SA)"),
+    "CTH": ("cambio de partida", "la misma partida (4 primeras cifras del código SA)"),
+    "CTSH": ("cambio de subpartida", "la misma subpartida (6 cifras del código SA)"),
+}
+
+
+def join_codes(codes: list[str]) -> str:
+    """["CTH", "MAXNOM"] -> "CTH o MAXNOM"; ["CC", "CTH", "RVC"] -> "CC, CTH o RVC"."""
+    return codes[0] if len(codes) == 1 else ", ".join(codes[:-1]) + " o " + codes[-1]
+
+
+def criteria_notes(rule: Rule) -> str:
+    """Cómo se aplica ESTA regla: qué criterios admite y qué significa cada uno.
+
+    Solo se explican los criterios de la regla. Con definiciones genéricas de todos los
+    criterios, el profesor aplicaba también los que la regla no incluye (CTSH en una regla que
+    solo admite MaxNOM), así que la lista de criterios válidos va explícita.
+    """
+    codes = [alt.kind for alt in rule.alternatives]
+    if len(codes) == 1:
+        lines = [f"Esta regla solo admite el criterio {codes[0]}; ningún otro criterio cuenta."]
+    else:
+        lines = [
+            f"Esta regla solo admite los criterios {join_codes(codes)}. Basta con que se cumpla "
+            "uno de ellos; ningún otro criterio cuenta."
+        ]
+    for alt in rule.alternatives:
+        if alt.kind in CLASSIFICATION_NOTES:
+            name, same = CLASSIFICATION_NOTES[alt.kind]
+            excluded = ""
+            if alt.excluded_headings:
+                plural = len(alt.excluded_headings) > 1
+                heads = " ni ".join(alt.excluded_headings)
+                which = "las partidas" if plural else "la partida"
+                excluded = f", ni en {which} {heads}, que la regla excluye"
+            lines.append(
+                f"{alt.kind} ({name}): se cumple si ningún material no originario está clasificado "
+                f"en {same} que el producto{excluded}. Los materiales originarios no cuentan."
+            )
+        elif alt.kind == "MAXNOM":
+            lines.append(
+                "MAXNOM: se cumple si el valor total de los materiales no originarios no supera el "
+                "porcentaje del precio que fija la regla."
+            )
+        elif alt.kind == "RVC":
+            lines.append(
+                "RVC: se cumple si (precio - valor de materiales no originarios) / precio "
+                "alcanza el porcentaje que fija la regla, con el precio que ella indica."
+            )
+        else:
+            lines.append("WO: se cumple si no se utiliza ningún material no originario.")
+    return "Cómo se aplica esta regla:\n" + "\n".join(f"- {line}" for line in lines)
+
+
+def describe_rule(rule: Rule, wording: str = "siglas") -> str:
+    descriptive = wording == "descriptiva"
+    describe = describe_alternative_descriptive if descriptive else describe_alternative
+    return "; o ".join(describe(alt) for alt in rule.alternatives) + "."
 
 
 # --------------------------------------------------------------------------- generador
@@ -303,12 +489,9 @@ class OriginGenerator(ProblemGenerator):
     name = "origin"
 
     def sample_params(self, rng: random.Random, split: str) -> dict[str, Any]:
-        if split == "ood":
-            raise NotImplementedError(
-                "el split ood (reglas estilo UE-Corea y UE-Mercosur) aún no está definido"
-            )
-        rule_id = rng.choice(sorted(RULES))
-        rule, product = RULES[rule_id], PRODUCTS[rule_id]
+        rules, products = (OOD_RULES, OOD_PRODUCTS) if split == "ood" else (RULES, PRODUCTS)
+        rule_id = rng.choice(sorted(rules))
+        rule, product = rules[rule_id], products[rule_id]
         exw = rng.randrange(product.exw_range[0], product.exw_range[1] + 1, 10)
         fob = round(exw * rng.uniform(1.03, 1.12))
         heading = product.code[:4]
@@ -365,7 +548,7 @@ class OriginGenerator(ProblemGenerator):
                 operations.append(rng.choice(INSUFFICIENT_OPERATIONS))
             rng.shuffle(operations)
 
-        return {
+        params = {
             "rule_id": rule_id,
             "agreement": rule.agreement,
             "product_name": product.name,
@@ -376,6 +559,10 @@ class OriginGenerator(ProblemGenerator):
             "operations": operations,
             "materials": materials,
         }
+        if split == "ood":
+            # Solo en ood: ni la clave ni la llamada al azar existen en train, que queda intacto.
+            params["wording"] = rng.choice(OOD_WORDINGS)
+        return params
 
     @staticmethod
     def _force_exact(
@@ -410,7 +597,7 @@ class OriginGenerator(ProblemGenerator):
         )
 
     def solve(self, params: dict[str, Any]) -> tuple[str, dict[str, str]]:
-        rule = RULES[params["rule_id"]]
+        rule = ALL_RULES[params["rule_id"]]
         materials = [Material.from_dict(m) for m in params["materials"]]
         evaluation = evaluate(
             rule,
@@ -437,11 +624,13 @@ class OriginGenerator(ProblemGenerator):
             "criterios_validos": "|".join(evaluation.satisfied) or "NINGUNO",
         }
         branches.update({name: str(value) for name, value in evaluation.flags.items()})
+        if "wording" in params:
+            branches["redaccion"] = params["wording"]
         return answer, branches
 
     def render(self, params: dict[str, Any], rng: random.Random) -> tuple[str, int]:
-        rule = RULES[params["rule_id"]]
-        agreement_name, partner = AGREEMENTS[params["agreement"]]
+        rule = ALL_RULES[params["rule_id"]]
+        agreement_name, partner = ALL_AGREEMENTS[params["agreement"]]
         origin_label = {
             "UE": "UE",
             "SOCIO": partner,
@@ -462,11 +651,19 @@ class OriginGenerator(ProblemGenerator):
             f"Precio franco fábrica (EXW): {fmt_eur(params['exw'])} €. "
             f"Precio FOB: {fmt_eur(params['fob'])} €."
         )
-        rule_block = f"Regla de origen de la partida {params['product_code'][:4]}: {describe_rule(rule)}"
+        rule_text = describe_rule(rule, params.get("wording", "siglas"))
+        rule_block = (
+            f"Regla de origen de la partida {params['product_code'][:4]}: {rule_text}\n"
+            + criteria_notes(rule)
+        )
+        # El profesor comparaba con la tolerancia el total de TODOS los no originarios (0 de 16
+        # trazas válidas en los casos rescatados por tolerancia): la suma que cuenta va explícita.
         tolerance_text = (
-            f"Tolerancia: los materiales no originarios que incumplen el cambio de clasificación "
-            f"pueden usarse si su valor total no supera el {params['tolerance_pct']} % del precio "
-            f"EXW. La tolerancia no amplía los umbrales de valor (MaxNOM, RVC)."
+            "Tolerancia: si los materiales no originarios que impiden cumplir un criterio de "
+            "cambio de clasificación de esta regla suman como máximo el "
+            f"{params['tolerance_pct']} % del precio EXW, ese criterio se cumple igualmente. En "
+            "esa suma solo entran los materiales que impiden cumplirlo, no todos los no "
+            "originarios. La tolerancia no amplía los umbrales de valor (MaxNOM, RVC)."
             if params["tolerance_pct"]
             else "No se aplica tolerancia en este caso."
         )
@@ -482,10 +679,11 @@ class OriginGenerator(ProblemGenerator):
         operations_block = "Operaciones realizadas: " + ", ".join(
             OPERATION_LABEL[o] for o in params["operations"]
         ) + "."
+        codes = join_codes([alt.kind for alt in rule.alternatives])
         ask = (
             "Decide si el producto es originario. Da la respuesta final como JSON con las claves "
-            '"originario" (true/false), "criterio" (uno de los criterios de la regla que se '
-            "cumplan: CTH, CTSH, CC, MAXNOM, RVC o WO; NINGUNO si no es originario) y "
+            '"originario" (true/false), "criterio" (uno de los criterios de esta regla que se '
+            f"cumplan: {codes}; NINGUNO si no es originario) y "
             '"pct_no_originario" (valor total de materiales no originarios sobre el precio EXW, '
             'en %, con dos decimales). Si el producto no es originario, "criterio" debe ser '
             'exactamente "NINGUNO", aunque hayas comprobado otros criterios.'
@@ -541,6 +739,17 @@ def describe(problems: list[Problem]) -> dict[str, Any]:
     }
 
 
+def to_jsonl(problems: list[Problem], split: str) -> str:
+    """El contenido exacto del fichero. Lo usan ``main`` y el test que vigila la huella de train."""
+    lines = []
+    for problem in problems:
+        row = asdict(problem)
+        row["split"] = split
+        row["label_source"] = "generator"
+        lines.append(json.dumps(row, ensure_ascii=False) + "\n")
+    return "".join(lines)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -556,12 +765,7 @@ def main() -> None:
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    with out.open("w", encoding="utf-8") as handle:
-        for problem in problems:
-            row = asdict(problem)
-            row["split"] = args.split
-            row["label_source"] = "generator"
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    out.write_text(to_jsonl(problems, args.split), encoding="utf-8")
 
     print(json.dumps(describe(problems), indent=2, ensure_ascii=False))
     print(f"\n{len(problems)} problemas -> {out}")
