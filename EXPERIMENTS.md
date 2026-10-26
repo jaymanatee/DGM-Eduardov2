@@ -54,6 +54,8 @@ entrada.
 | `rlm/weights/sft_prueba/` | Adaptador LoRA de la prueba corta (0,1 épocas). Solo sirvió para medir memoria y velocidad | 2026-10-16 · Configuración del SFT y prueba corta |
 | `rlm/weights/sft_lora/` | Adaptador LoRA del SFT completo (2 épocas). Es el elegido; `checkpoint-75` es el de la época 1 | 2026-10-24 · SFT completo |
 | `reports/prueba_eval.json` | Modelo base en los 4 primeros problemas de `test` | 2026-10-16 · Modelo base en 4 problemas de test |
+| `reports/phase1_eval_test.json`, `reports/phase1_eval_test_ood.json` | Respuestas completas y veredictos del base y del SFT en `test` y `test_ood` | 2026-10-26 · Evaluación del base y del SFT |
+| `reports/phase1_analysis_test.md`, `reports/phase1_analysis_test_ood.md` | Análisis de esas evaluaciones (`rlm/analyze_eval.py`) | 2026-10-26 · Evaluación del base y del SFT |
 
 ---
 
@@ -796,3 +798,161 @@ La `loss` de entrenamiento se registra cada 10 pasos; la del paso 10 fue 0,473.
   `eval_loss` más baja.
 - Límite de esta medida: `eval_loss` dice si el modelo imita bien las trazas del profesor, no si
   acierta. Lo que dice si el SFT ha servido es el pass@1 en `test`, en la siguiente entrada.
+
+### 2026-10-26 · Fase 1 · Evaluación del base y del SFT: el SFT duplica el pass@1 (28 % → 56 %)
+
+**Qué queríamos saber.** Si el SFT ha servido: cuánto acierta frente al modelo base en problemas
+que no ha visto, qué tipo de fallos arregla, dónde sigue fallando y si generaliza a reglas que no
+estaban en el entrenamiento.
+
+**Qué hicimos.** Evaluar los dos modelos en `test` (200 problemas) y `test_ood` (100: reglas de
+Mercosur, la mitad con la redacción sin siglas), con el mismo prompt, sin azar y un máximo de
+3.072 tokens. El SFT es el adaptador final de la entrada anterior. Partición `MIG 3g.71gb`
+(perfil Entrenamiento); la velocidad y la memoria van en la entrada siguiente.
+
+```
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True nohup bash -c "
+uv run --extra train python -m rlm.evaluate --data rlm/data/test.jsonl \
+    --adapters base=none sft=rlm/weights/sft_lora --batch-size 50 &&
+uv run --extra train python -m rlm.evaluate --data rlm/data/test_ood.jsonl \
+    --adapters base=none sft=rlm/weights/sft_lora --batch-size 50
+" > runs/eval.log 2>&1 &
+uv run python -m rlm.analyze_eval reports/phase1_eval_test.json
+uv run python -m rlm.analyze_eval reports/phase1_eval_test_ood.json --no-teacher
+```
+
+**Qué pasó.**
+
+| | Base, `test` | SFT, `test` | Base, `test_ood` | SFT, `test_ood` |
+|---|---|---|---|---|
+| pass@1 | 28,0 % | 56,0 % | 33,0 % | 58,0 % |
+| Intervalo al 95 % | 22,2–34,6 % | 49,1–62,7 % | 24,6–42,7 % | 48,2–67,2 % |
+| pass@1 lenient | 29,0 % | 56,5 % | 38,0 % | 58,0 % |
+| Formato válido | 19,0 % | 83,5 % | 21,0 % | 80,0 % |
+| Cortadas a 3.072 tokens | 10,5 % | 16,5 % | 12,0 % | 20,0 % |
+
+Comparación problema a problema: en `test`, el SFT arregla 69 problemas que el base fallaba y
+estropea 13 que el base acertaba (43 los aciertan los dos y 75 los fallan los dos); test de
+McNemar exacto, p = 2,3·10⁻¹⁰. En `test_ood`, 38 arreglados frente a 13 estropeados, p = 6,2·10⁻⁴.
+
+Tipos de fallo:
+
+| Tipo | Base, `test` | SFT, `test` | Base, `test_ood` | SFT, `test_ood` |
+|---|---|---|---|---|
+| `<tool_call>` en lugar de `<answer>` | 38 | 0 | 14 | 0 |
+| Cierra el razonamiento sin `<answer>` | 7 | 0 | 11 | 0 |
+| Cortada sin responder | 20 | 33 | 10 | 20 |
+| Veredicto incorrecto | 39 | 32 | 14 | 15 |
+| Porcentaje incorrecto | 29 | 22 | 13 | 7 |
+| Criterio incorrecto | 11 | 1 | 5 | 0 |
+
+pass@1 por grupo en `test`, con la tasa de aceptación del profesor en la destilación (orientativa:
+otros problemas, otro modelo y generación con temperatura):
+
+| Grupo | n | Base | SFT | Profesor |
+|---|---|---|---|---|
+| Todos | 200 | 28,0 % | 56,0 % | 64,1 % |
+| Originarios por un criterio de valor | 74 | 28,4 % | 74,3 % | 86,2 % |
+| Originarios solo por cambio de clasificación | 61 | 18,0 % | 26,2 % | 39,0 % |
+| No originarios | 65 | 36,9 % | 63,1 % | 54,3 % |
+| Criterio aplicado MaxNOM | 27 | 40,7 % | 100,0 % | 97,5 % |
+| Criterio aplicado RVC | 13 | 0,0 % | 38,5 % | 72,6 % |
+| Criterio aplicado CTSH (`CETA-8413`) | 28 | 25,0 % | 14,3 % | 27,8 % |
+| Tolerancia usada | 30 | 10,0 % | 6,7 % | 12,8 % |
+| Operación insuficiente | 17 | 23,5 % | 29,4 % | 19,7 % |
+| Proveedor sin declaración | 50 | 16,0 % | 40,0 % | 56,7 % |
+| Umbral exacto | 23 | 30,4 % | 73,9 % | 84,0 % |
+
+En `test_ood`: `MERCOSUR-9401` (CC como único criterio) pasa de 8,3 % a 50,0 % (n = 24); con
+siglas, de 32 % a 62 %, y con la redacción descriptiva, de 34 % a 54 % (n = 50 cada una); los no
+originarios, de 33,3 % a 76,7 % (n = 30); la tolerancia queda en 8,3 % (n = 12) y el umbral exacto
+baja de 36,4 % a 27,3 % (n = 11).
+
+Longitud en `test`: el SFT acierta con razonamientos más cortos (mediana de 1.071 tokens, frente a
+1.440 del base), y sus fallos son largos (mediana de 1.696). En casi todos los aciertos, el
+razonamiento contiene el porcentaje y la suma esperados (entre el 96 y el 100 % según el modelo y
+el conjunto; comprobación heurística de `analyze_eval.py`). Solo un acierto, del base en
+`test_ood`, no muestra ninguno de los dos: no vemos aciertos por casualidad.
+
+Fallos del SFT que se ven en la respuesta (las cifras son las del propio modelo):
+
+- Problema 12 de `test` (`TCA-8414`, tolerancia usada): responde CTH, que es correcto, pero con
+  un 9,75 % en lugar del 67,63 %. Lo mismo en los problemas 14, 22 y 25 de `test_ood`, los tres
+  con tolerancia: da el porcentaje de los materiales que impiden el cambio de clasificación, no el
+  de todos los no originarios.
+- Problema 8 de `test` (`CETA-8413`, tolerancia usada): el porcentaje es correcto (24,83 %), pero
+  responde "no originario". No aplica la tolerancia.
+- Problema 17 de `test` (operación insuficiente): responde originario por RVC con el porcentaje
+  correcto. Pasa por alto que la operación no confiere origen.
+- Problema 5 de `test` y problema 2 de `test_ood`: se cumplen dos criterios y el modelo da vueltas
+  a cuál poner («the rule allows either, the answer can be either. However…») hasta el límite de
+  tokens. Es el mismo bloqueo que tenía el base en el problema 3.
+
+**Qué concluimos.**
+
+- **El SFT funciona y no es azar.** Duplica el pass@1 en `test` (28 % → 56 %) y la mejora es
+  muy significativa. Fuera de distribución sube lo mismo (33 % → 58 %), así que lo aprendido se
+  traslada a reglas que no estaban en el entrenamiento. Con una salvedad: desde el enunciado E5,
+  cada problema explica los criterios de su regla, así que `test_ood` es menos difícil de lo que
+  era al diseñarlo. La diferencia entre redacciones (62 % frente a 54 %) no es concluyente con 50
+  problemas por grupo.
+- **El formato queda resuelto.** El formato válido pasa del 19 % al 83,5 %, los `<tool_call>`
+  desaparecen y los criterios mal etiquetados bajan de 11 a 1: el alumno ha aprendido a poner
+  `NINGUNO`. La hipótesis de la entrada del 16 se confirma en parte: 45 de los 144 fallos del base
+  son de entrega de la respuesta, y no de razonamiento. Los de razonamiento (veredicto, criterio y
+  porcentaje) son 79 en el base y 55 en el SFT: mejoran, pero bastante menos. El pass@1 lenient no
+  sirvió para medir esa parte, porque cuando el base escribe `<tool_call>` tampoco deja el JSON
+  después del razonamiento.
+- **El alumno aprende lo que sabe el profesor y hereda lo que no sabe.** Iguala o supera al
+  profesor en los criterios de valor (MaxNOM 100 %) y en los no originarios (63 % frente a 54 %).
+  Se queda por debajo en lo que el profesor hacía peor: solo cambio de clasificación (26 % frente
+  a 39 %), CTSH (14 %, por debajo incluso del base, aunque con n = 28) y la tolerancia (7 %, frente
+  al 13 % del profesor), como esperábamos con solo 25 trazas de tolerancia. RVC (38 % frente a
+  73 %) es la mayor distancia con el profesor.
+- **Un error del profesor ha pasado al alumno.** En la tirada E6, 162 de los `wrong_pct` del
+  profesor daban el porcentaje de los materiales que impiden el cambio de clasificación en lugar
+  del de todos los no originarios. Esas trazas se rechazaron, pero el alumno comete el mismo
+  error en los casos de tolerancia. Nuestra hipótesis es que lo aprende de las trazas aceptadas,
+  en las que el profesor calcula esa suma parcial para comprobar la tolerancia, sin que en ellas
+  llegue a confundirla con el porcentaje final.
+- **El SFT se corta más que el base** (16,5 % frente a 10,5 % en `test`). Una parte son bloqueos
+  ante dos criterios válidos; otra, vueltas de comprobación («But wait…») que el alumno ha
+  copiado del profesor y que, sin azar, entran en bucle.
+- **Para el GRPO**, los casos con margen son la tolerancia, el cambio de clasificación (sobre todo
+  CTSH), RVC y las respuestas que se cortan. La recompensa de formato penaliza no llegar a
+  `<answer>`, así que el GRPO debería empujar también contra los bucles, siempre que
+  `--max-completion-length` deje llegar a la respuesta (3.072 tokens como mínimo).
+
+### 2026-10-26 · Fase 1 · Velocidad de generación: el límite es el coste fijo de cada token, no el tamaño del lote
+
+**Qué queríamos saber.** Por qué la generación iba a 430 ms por token y cómo evaluar 600
+respuestas (2 modelos × 300 problemas) en un tiempo razonable.
+
+**Qué hicimos.** Medir el tiempo por token de `Qwen3-1.7B` con lotes de 1, 4 y 16 secuencias
+(128 tokens nuevos, sin azar) en la partición `MIG 1g.18gb`. Después, evaluar en `MIG 3g.71gb`
+(perfil Entrenamiento) con lotes grandes.
+
+**Qué pasó.**
+
+| Partición | Lote | ms por token |
+|---|---|---|
+| `MIG 1g.18gb` | 1 | 304 |
+| `MIG 1g.18gb` | 4 | 300 |
+| `MIG 1g.18gb` | 16 | 297 |
+| `MIG 3g.71gb` | 100 | unos 480 |
+| `MIG 3g.71gb` | 50 | 470 en el primer lote; unos 70 en los siguientes |
+
+- Con lotes de 100, la evaluación se quedó sin memoria al acercarse a los 3.072 tokens:
+  40,5 GB ocupados y 28,3 GB reservados pero sin usar. Es fragmentación, porque la caché de
+  atención crece en cada token. Con `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` y lotes de
+  50 no volvió a pasar.
+- La evaluación completa (600 respuestas) tardó unas 1 h 40 min: `test` terminó a las 11:21 y
+  `test_ood` a las 12:01, tras arrancar a las 10:22.
+
+**Qué concluimos.** El tiempo por token casi no cambia con el lote: lo que cuesta es el trabajo
+fijo de cada paso (lanzar desde Python muchas operaciones pequeñas a la GPU), no el cálculo. Por
+eso conviene generar con lotes tan grandes como quepan en memoria. No sabemos explicar por qué el
+primer lote de 50 fue siete veces más lento que los siguientes. Sospechamos de otro proceso
+compitiendo en el nodo, pero no lo hemos comprobado. Para el GRPO, que genera varias respuestas
+por problema en cada paso, este coste fijo pesa mucho; vLLM evitaría buena parte, pero no está
+instalado.
