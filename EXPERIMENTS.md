@@ -46,6 +46,15 @@ Referencias fijas con el enunciado E6 (se actualizan solo si cambia el generador
 | `test_ood.jsonl` | `--n 100 --split ood --seed 0` | `58787a033551ba6f68a0c92d9375985752f5855ba4de37b7b38223200cee08c8` |
 | `sft_problemas.jsonl` | `--n 500 --split train --seed 0` | `3327deb2e5d4a831c458cc7731bddeafc61b70f80b9c6821e9427f1e766ca17d` |
 
+Modelos y evaluaciones. Los pesos no se suben al repositorio: se regeneran con el comando de su
+entrada.
+
+| Ruta | Qué es | Entrada |
+|---|---|---|
+| `rlm/weights/sft_prueba/` | Adaptador LoRA de la prueba corta (0,1 épocas). Solo sirvió para medir memoria y velocidad | 2026-10-16 · Configuración del SFT y prueba corta |
+| `rlm/weights/sft_lora/` | Adaptador LoRA del SFT completo (2 épocas). Es el elegido; `checkpoint-75` es el de la época 1 | 2026-10-24 · SFT completo |
+| `reports/prueba_eval.json` | Modelo base en los 4 primeros problemas de `test` | 2026-10-16 · Modelo base en 4 problemas de test |
+
 ---
 
 ## Entradas
@@ -548,3 +557,242 @@ Comparación con E2 sobre los mismos 256 primeros problemas, y sobre los 500 de 
 
 Repetir con la redacción de la tolerancia de E5 recuperaría parte de los no originarios, pero
 costaría otras 24 horas de GPU y la tolerancia seguiría prácticamente sin resolver. No compensa.
+
+### 2026-10-16 · Fase 1 · Longitud de las secuencias del SFT: 4.096 tokens bastan
+
+**Qué queríamos saber.** Qué `--max-length` necesita el SFT. El valor por defecto de
+`train_sft.py` (2.048) cuenta enunciado y traza juntos, y la respuesta va al final: una secuencia
+truncada enseñaría al alumno a razonar sin llegar nunca a responder.
+
+**Qué hicimos.** Pasar las 1.282 trazas válidas por la plantilla de chat de `Qwen/Qwen3-1.7B` tal
+como las ve el entrenamiento (prompt de sistema, enunciado y traza como respuesta del asistente) y
+contar tokens. De paso, comprobar que la plantilla conserva el `<think>`: la de Qwen3 puede
+manipular el razonamiento de los mensajes del asistente.
+
+**Qué pasó.**
+
+| Enunciado + traza | Secuencias |
+|---|---|
+| Más de 3.072 tokens | 102 de 1.282 |
+| Más de 4.096 tokens | 0 |
+| Mediana / máximo | 1.983 / 4.021 |
+
+El `<think>` y el `</answer>` aparecen en el texto renderizado.
+
+**Qué concluimos.** `--max-length 4096`: no se trunca ninguna traza y no hace falta descartar
+ninguna. Para el GRPO, `--max-completion-length` tendrá que rondar los 3.000 tokens (el profesor
+llega a escribir más de 3.000 en 102 casos), muy por encima de los 768 por defecto; con varias
+muestras por problema, eso pesará en memoria.
+
+### 2026-10-16 · Fase 1 · Configuración del SFT y prueba corta: cabe en 16 GB
+
+**Qué queríamos saber.** Con qué datos y parámetros entrenar, cómo detectar el sobreajuste, y si
+el entrenamiento cabe en la partición de 16 GB y cuánto tarda.
+
+**Qué hicimos.** Cambios en `train_sft.py`:
+
+- Datos: todas las trazas válidas, hasta 4 por problema (1.282). La alternativa, un máximo de 2
+  por problema (unas 750), equilibraría problemas fáciles y difíciles con menos datos: 209
+  problemas tienen sus 4 trazas válidas, así que los fáciles pesan hasta cuatro veces más. Queda
+  como ablación.
+- Validación por problema, no por traza. Las 4 trazas de un problema se parecen mucho; si se
+  repartieran entre entrenamiento y validación, `eval_loss` saldría mejor de lo que es. El lado de
+  cada problema lo decide una huella SHA-256 del enunciado (10 % a validación), así que el reparto
+  es el mismo en cada ejecución y no depende del orden del fichero. Quedan 1.197 trazas de 377
+  problemas para entrenar y 85 trazas de 30 problemas para validar. Son el 7 % de los 407
+  problemas con alguna traza válida, no el 10 %: con una huella el reparto es aleatorio y no sale
+  exacto.
+- `eval_loss` cada 20 pasos y una vez antes de entrenar (`eval_on_start`), para tener el punto de
+  partida de la curva.
+- `log_history.json` en la carpeta de salida, con todas las pérdidas. Las curvas se dibujan con
+  `python -m rlm.evaluate --history <ruta>`.
+
+| Parámetro | Valor | Por qué |
+|---|---|---|
+| Modelo base | `Qwen/Qwen3-1.7B` | El de la propuesta; misma familia que el profesor |
+| LoRA | rango 16, alpha 32, dropout 0,05, todas las capas lineales | Los valores de la plantilla |
+| Épocas | 2 | Con unas 1.200 trazas, más épocas tienden a memorizar; lo dirá la curva de validación |
+| Learning rate | 2·10⁻⁴, calentamiento del 5 % y bajada en coseno | Más estable con pocos pasos (150) |
+| Lote | 1, con 16 de acumulación (16 trazas por paso) | Secuencias de hasta 4.021 tokens en 16 GB |
+| `max_length` | 4.096 | Entrada anterior |
+| `packing` | no | Con secuencias tan largas hay poco que empaquetar, y mezclaría trazas distintas en una muestra |
+| `assistant_only_loss` | no | El formato prompt/completion ya calcula la pérdida solo sobre la respuesta |
+
+Con transformers 5.17.0, `SFTConfig` ya no acepta `warmup_ratio`: el 5 % se pasa como
+`warmup_steps=0.05`, que se interpreta como fracción del entrenamiento cuando es menor que 1.
+
+Prueba de 0,1 épocas en la partición `MIG 1g.18gb`:
+
+```
+uv run --extra train python -m rlm.train_sft --data rlm/data/sft_traces.jsonl \
+    --epochs 0.1 --output rlm/weights/sft_prueba
+```
+
+**Qué pasó.**
+
+| Validación | Antes de entrenar | Tras 8 pasos (0,107 épocas) |
+|---|---|---|
+| `eval_loss` | 0,574 | 0,364 |
+| `eval_mean_token_accuracy` | 0,861 | 0,876 |
+| `eval_entropy` | 0,183 | 0,412 |
+
+- Pérdida media de entrenamiento: 0,441. Sin errores de memoria.
+- 352 s para los 8 pasos (44 s por paso contando la evaluación final). La evaluación de las 85
+  trazas tarda unos 23 s, 57 s la primera vez.
+- 75 pasos por época, 150 en total.
+
+**Qué concluimos.**
+
+- Antes de entrenar, el alumno ya predice el 86 % de los tokens de las trazas del profesor. Lo
+  atribuimos a que alumno y profesor son de la misma familia (mismo tokenizador y estilo de
+  razonamiento parecido), lo que apoya haber elegido un profesor Qwen3.
+- `eval_loss` baja mucho en solo 8 pasos: el formato y el estilo se aprenden pronto.
+- La entropía de validación sube de 0,18 a 0,41. No sabemos explicarlo con 8 pasos; lo miraremos
+  en la curva completa.
+- Cabe en 16 GB. Estimación para el SFT completo: alrededor de 1 h 30 min.
+
+### 2026-10-16 · Fase 1 · `evaluate.py`: el mismo prompt que en el entrenamiento y dos métricas de acierto
+
+**Qué queríamos saber.** Cómo medir el pass@1 del modelo base, del SFT y del GRPO de forma que la
+comparación sea justa.
+
+**Qué hicimos.** Implementar `evaluate_model` en `rlm/evaluate.py`:
+
+- El prompt se construye en un solo sitio (`render_prompt`): `build_prompt` más la plantilla de
+  chat con `add_generation_prompt=True` y `enable_thinking=True`, igual que en `distill.py` y en
+  el SFT. Con `enable_thinking=False`, la plantilla de Qwen3 añade un `<think></think>` vacío y el
+  modelo se salta el razonamiento. No da ningún error: solo saldrían peores resultados.
+- Base y SFT son idénticos salvo el adaptador: el base es `Qwen3-1.7B` tal cual y el SFT, el mismo
+  modelo con el LoRA fusionado (`merge_and_unload`).
+- Generación sin azar por defecto, para que el pass@1 sea reproducible. `--temperature` queda
+  como alternativa si el modelo entra en bucles.
+- Dos métricas de acierto. `pass@1` exige la respuesta dentro de `<answer>`, como `/reasoning`.
+  `pass@1_lenient` también acepta el último JSON escrito después de `</think>`. La diferencia
+  entre las dos separa los fallos de formato de los de razonamiento. Además se miden el formato
+  válido, las respuestas cortadas y los tokens medios.
+- Desglose por veredicto esperado y por cada campo de `branches` (regla, trampas, redacción).
+- Los resultados se acumulan en `reports/phase1_eval_<datos>.json`, que se guarda después de cada
+  modelo: se puede evaluar el base un día y el SFT otro, y la tabla final muestra los dos.
+- Generación por lotes (8 problemas a la vez) en lugar de reutilizar `ReasoningModel`, que va de
+  uno en uno.
+
+**Qué pasó.** Los ficheros de problemas no estaban en la DGX, porque no se suben al repositorio.
+Regenerados `test.jsonl`, `test_ood.jsonl` y `train.jsonl` con la semilla 0: sus sha256 coinciden
+con la tabla de referencia. En la primera prueba, el desglose contaba dos veces la etiqueta
+`originario` (salía de la respuesta esperada y de `branches`); corregido para que cada etiqueta
+cuente una vez por problema.
+
+**Qué concluimos.** Todos los modelos se evalúan con los mismos problemas, el mismo prompt y el
+mismo verificador. Queda comprobar que `rlm/inference.py` construye el prompt igual: si no,
+`/reasoning` respondería distinto de lo que mide la evaluación.
+
+### 2026-10-16 · Fase 1 · Modelo base en 4 problemas de `test`: falla sobre todo el formato, y la generación va a 430 ms por token
+
+**Qué queríamos saber.** Si `evaluate.py` funciona de punta a punta y cómo se comporta el modelo
+base antes de evaluar los 200 problemas.
+
+**Qué hicimos.**
+
+```
+uv run --extra train python -m rlm.evaluate --data rlm/data/test.jsonl \
+    --adapters base=none --n-examples 4 --out reports/prueba_eval.json
+```
+
+Partición `MIG 1g.18gb`, sin azar, 3.072 tokens como máximo, un lote de 4 problemas.
+
+**Qué pasó.**
+
+| pass@1 | lenient | Formato válido | Cortadas | Tokens medios |
+|---|---|---|---|---|
+| 0,25 | 0,25 | 0,25 | 0,25 | 1.580 |
+
+| Problema | Tokens | Resultado | Qué hace |
+|---|---|---|---|
+| 0 | 801 | Falla | Razona y concluye (CTSH, 0,00 %), pero tras `</think>` escribe `<tool_call> reasoning process here` en lugar de `<answer>` |
+| 1 | 1.514 | Acierta | Umbral exacto: MaxNOM al 50,00 % justo, con el formato correcto |
+| 2 | 933 | Falla | Concluye originario por CTH y RVC con un 31,48 %, y vuelve a escribir `<tool_call>` |
+| 3 | 3.072 | Falla (cortada) | Se cumplen CTH y RVC; cree que tiene que poner los dos en `criterio`, ve que el JSON no lo permite y da vueltas hasta el límite |
+
+Velocidad: 430 ms por token, constante de 256 a 3.072 tokens. El lote tardó 1.323 s (22 minutos)
+porque espera a la respuesta más larga. El modelo está entero en la GPU (11,8 de 16 GB libres tras
+cargarlo) y no hay otros procesos. A este ritmo, los 200 problemas en lotes de 8 serían unas 9
+horas por modelo. En la misma partición, el distill de E6 hacía unos 3 minutos por problema con un
+modelo mayor (4B) y 8 secuencias, del orden de 0,1 a 0,2 s por token. No sabemos explicar la
+diferencia.
+
+**Qué concluimos.**
+
+- `evaluate.py` funciona de punta a punta.
+- Con 4 problemas el pass@1 no dice nada, pero aparecen dos fallos que no son del dominio: el
+  `<tool_call>` y el bloqueo cuando se cumplen dos criterios. Nuestra hipótesis para el
+  `<tool_call>`: el prompt de sistema de R1-Zero trae una plantilla con marcas y huecos (`<think>
+  reasoning process here </think> <answer> answer here </answer>`), y Qwen3, entrenado para llamar
+  a herramientas con `<tool_call>`, la rellena a su manera. No cambiamos el prompt: las trazas del
+  SFT se generaron con él y el base tiene que evaluarse igual que el SFT. Probar otro prompt queda
+  como experimento aparte.
+- Hipótesis para los 200 problemas: buena parte de los fallos del base son de formato, no de
+  razonamiento. Si se confirma, el SFT aportaría sobre todo formato. Lo dirá la comparación por
+  motivo de fallo.
+- La velocidad obliga a evaluar con lotes más grandes o en una instancia mayor (perfil
+  Entrenamiento, 71 GB). Antes hay que medir cómo cambia el tiempo por token con el tamaño del
+  lote.
+
+### 2026-10-24 · Fase 1 · SFT completo: sin sobreajuste, `eval_loss` de 0,574 a 0,228
+
+**Qué queríamos saber.** Cómo queda el alumno tras dos épocas de SFT y si la curva de validación
+muestra sobreajuste.
+
+**Qué hicimos.**
+
+```
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True nohup uv run --extra train \
+    python -m rlm.train_sft --data rlm/data/sft_traces.jsonl \
+    --output rlm/weights/sft_lora > runs/sft.log 2>&1 &
+```
+
+Configuración de la entrada del 16 de octubre. Lanzado el 24 a las 21:11 en la partición
+`MIG 1g.18gb` (sesión de estudiante, 4 núcleos).
+
+`source smoke/dgx_env.sh` avisa de que no existe `~/clusters/dgx`. El script solo decide dónde
+van las cachés de uv y de Hugging Face y la configuración global de git; sin esa carpeta todo queda
+en su sitio por defecto, así que no afecta al entrenamiento.
+
+**Qué pasó.** Terminó sin errores en 3.551 s (59 minutos, unos 24 s por paso con las
+evaluaciones incluidas, más rápido de lo estimado). Pérdida media de entrenamiento: 0,262. Curvas
+en `rlm/weights/sft_lora/log_history.png`.
+
+| Paso | Época | `eval_loss` | `loss` (entrenamiento) |
+|---|---|---|---|
+| 0 | 0 | 0,574 | — |
+| 20 | 0,27 | 0,300 | 0,340 |
+| 40 | 0,53 | 0,263 | 0,270 |
+| 60 | 0,80 | 0,246 | 0,248 |
+| 80 | 1,07 | 0,237 | 0,234 |
+| 100 | 1,33 | 0,232 | 0,228 |
+| 120 | 1,60 | 0,229 | 0,224 |
+| 140 | 1,87 | 0,228 | 0,226 |
+| 150 | 2 | 0,228 | 0,222 |
+
+La `loss` de entrenamiento se registra cada 10 pasos; la del paso 10 fue 0,473.
+
+| Validación | Antes de entrenar | Tras 8 pasos | Al final |
+|---|---|---|---|
+| `eval_mean_token_accuracy` | 0,861 | 0,876 | 0,915 |
+| `eval_entropy` | 0,183 | 0,412 | 0,222 |
+
+**Qué concluimos.**
+
+- No hay sobreajuste. `eval_loss` baja todo el rato y acaba pegada a la de entrenamiento (0,228
+  frente a 0,222). Si el modelo memorizara, la de validación subiría mientras la otra sigue
+  bajando.
+- Casi el 90 % de la bajada de `eval_loss` ocurre en los primeros 40 pasos (media época). Lo
+  interpretamos como el aprendizaje del formato y del estilo del profesor; después solo afina.
+- La segunda época aporta poco: `eval_loss` pasa de 0,237 al empezarla a 0,228 al acabarla, y está
+  plana desde el paso 120. Más épocas no compensarían, y menos tampoco hacen falta, porque no hay
+  sobreajuste que evitar.
+- La subida de entropía de la prueba corta fue pasajera (0,18 → 0,41 → 0,22): al principio el
+  modelo está menos seguro mientras cambia de estilo y luego se estabiliza.
+- Elegimos el adaptador final (`rlm/weights/sft_lora`, igual que `checkpoint-150`), el de
+  `eval_loss` más baja.
+- Límite de esta medida: `eval_loss` dice si el modelo imita bien las trazas del profesor, no si
+  acierta. Lo que dice si el SFT ha servido es el pass@1 en `test`, en la siguiente entrada.
