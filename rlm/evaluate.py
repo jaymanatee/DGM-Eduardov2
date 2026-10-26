@@ -230,8 +230,12 @@ def _groups(row: dict) -> list[str]:
         except ValueError:
             branches = {}
     for key, value in branches.items():
+        if isinstance(value, bool):  # trap flags: only the problems that have the trap
+            if value:
+                labels.append(key)
+            continue
         for v in value if isinstance(value, list) else [value]:
-            if v is None or isinstance(v, (str, int, float, bool)):
+            if v is None or isinstance(v, (str, int, float)):
                 labels.append(f"{key}={v}")
     return list(dict.fromkeys(labels))  # a label counts once per row
 
