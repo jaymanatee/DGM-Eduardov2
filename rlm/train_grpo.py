@@ -6,44 +6,42 @@ final reasoning model, ``rlm/weights/final_rlm_lora``.
 
 Run::
 
-    uv run python -m rlm.train_grpo --data rlm/data/train.jsonl --init-adapter rlm/weights/sft_lora
+    uv run --extra train python -m rlm.train_grpo --data rlm/data/train.jsonl \
+        --init-adapter rlm/weights/sft_lora
 
 The smoke test (``smoke/smoke_grpo.py``) is the minimal version of this script on GSM8K.
 Here you add what makes it *yours*:
 
 1. Your domain dataset (``rlm/data.py::load_domain_dataset``) and your verifier.
-2. A third, domain-specific reward (``domain_reward`` below). Think about what a good
+2. A third, domain-specific reward (``domain_reward``). Think about what a good
    answer looks like for your user beyond being correct: language, units, length,
    citing a source, respecting a schema. Justify it in EXPERIMENTS.md and, if you use
    ``reward_weights``, justify those too.
 3. The hyper-parameters. Group size, completion length, learning rate and KL
    coefficient all change what the model learns. Change one thing at a time and log it.
+
+Our choices (see EXPERIMENTS.md):
+
+* Three rewards, all in ``rlm/rewards.py``: ``format_reward``, ``origin_accuracy_reward``
+  (``OriginVerifier``, binary) and ``domain_reward`` (JSON schema and coherence with the
+  rule). Weights 0.2 / 1.0 / 0.3: accuracy must dominate, or a well-formed wrong answer
+  would pay almost as much as a right one.
+* No length penalty for now. GRPO normalises rewards within each group, so in a group
+  where every answer gets the same accuracy, a small length term would decide the whole
+  advantage. Cut answers already score 0 on all three rewards.
+* ``--max-completion-length 3072``: the teacher's verified traces reach 3,072 tokens, and an
+  answer cut before ``<answer>`` never gets any reward.
+* The same chat template as ``distill.py`` and ``evaluate.py`` (``enable_thinking=True``).
 """
 
 from __future__ import annotations
 
 import argparse
-from collections.abc import Sequence
+import json
+from pathlib import Path
 
 from rlm.data import load_domain_dataset, load_gsm8k
-from rlm.rewards import _completion_text, accuracy_reward, format_reward
-
-
-def domain_reward(prompts: Sequence, completions: Sequence, **kwargs) -> list[float]:
-    """Tu turno: a reward that captures what "good" means in your domain.
-
-    Same signature as the other rewards: one float per completion, dataset columns arrive
-    in ``kwargs``. Keep it deterministic and cheap. Examples from class and beyond:
-
-    * language consistency: fraction of words in the answer's language (DeepSeek-R1);
-    * length shaping: penalise thinking that exceeds a budget, or reward concise answers;
-    * a units check for physical quantities; a schema check for structured answers;
-    * a code-execution reward: run the unit tests of the problem (only in a sandbox!).
-
-    Until you implement it, it returns 0.0 everywhere so the script still runs.
-    """
-    texts = [_completion_text(c) for c in completions]
-    return [0.0 for _ in texts]
+from rlm.rewards import accuracy_reward, domain_reward, format_reward, origin_accuracy_reward
 
 
 def train(args: argparse.Namespace) -> None:
@@ -53,8 +51,13 @@ def train(args: argparse.Namespace) -> None:
 
     if args.data == "gsm8k":
         dataset = load_gsm8k("train", n_examples=args.n_examples, seed=args.seed)
+        reward_funcs, reward_weights = [format_reward, accuracy_reward], None
     else:
         dataset = load_domain_dataset(args.data)
+        if args.n_examples is not None:
+            dataset = dataset.shuffle(seed=args.seed).select(range(args.n_examples))
+        reward_funcs = [format_reward, origin_accuracy_reward, domain_reward]
+        reward_weights = args.reward_weights
     print(f"{len(dataset)} training problems")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -79,10 +82,12 @@ def train(args: argparse.Namespace) -> None:
         log_completions=True,
         num_completions_to_print=2,
         model_init_kwargs={"dtype": torch.bfloat16 if device == "cuda" else torch.float32},
-        # Tu turno: reward_weights=[1.0, 2.0, 0.5] lets you weight format / accuracy / domain.
+        reward_weights=reward_weights,
+        # Same prompt as distill.py and evaluate.py: without it, Qwen3 skips the reasoning.
+        chat_template_kwargs={"enable_thinking": True},
     )
 
-    if args.init_adapter:
+    if args.init_adapter and args.init_adapter != "none":
         # Continue training the SFT adapter: load base + adapter as a trainable PeftModel.
         from peft import PeftModel
         from transformers import AutoModelForCausalLM
@@ -103,31 +108,45 @@ def train(args: argparse.Namespace) -> None:
 
     trainer = GRPOTrainer(
         model=model,
-        reward_funcs=[format_reward, accuracy_reward, domain_reward],
+        reward_funcs=reward_funcs,
         args=config,
         train_dataset=dataset,
         peft_config=peft_config,
     )
     trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
     trainer.save_model(args.output)
-    print(f"final adapter saved to {args.output}")
+
+    # Reward, length and loss per step, for the curves in EXPERIMENTS.md.
+    history = Path(args.output) / "log_history.json"
+    history.write_text(json.dumps(trainer.state.log_history, indent=2), encoding="utf-8")
+    print(f"final adapter saved to {args.output}; history in {history}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--data", default="gsm8k", help="'gsm8k' or path to your domain JSONL")
-    parser.add_argument("--model", default="Qwen/Qwen3-0.6B")
-    parser.add_argument("--init-adapter", default=None, help="SFT adapter to start from")
+    parser.add_argument(
+        "--data", default="rlm/data/train.jsonl", help="'gsm8k' or path to your domain JSONL"
+    )
+    parser.add_argument("--model", default="Qwen/Qwen3-1.7B")
+    parser.add_argument(
+        "--init-adapter", default="rlm/weights/sft_lora",
+        help="SFT adapter to start from; 'none' for the base model (R1-Zero)",
+    )
     parser.add_argument("--output", default="rlm/weights/final_rlm_lora")
     parser.add_argument("--steps", type=int, default=300)
     parser.add_argument("--num-generations", type=int, default=8)
     parser.add_argument("--grad-accum", type=int, default=1)
-    parser.add_argument("--max-completion-length", type=int, default=768)
+    parser.add_argument("--max-completion-length", type=int, default=3072)
     parser.add_argument("--learning-rate", type=float, default=5e-6)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--beta", type=float, default=0.0, help="KL coefficient (0 disables it)")
+    parser.add_argument(
+        "--reward-weights", type=float, nargs=3, default=[0.2, 1.0, 0.3],
+        metavar=("FORMAT", "ACCURACY", "DOMAIN"),
+        help="weights of the three domain rewards (ignored with gsm8k)",
+    )
     parser.add_argument("--lora-rank", type=int, default=16)
     parser.add_argument("--n-examples", type=int, default=None)
     parser.add_argument("--save-steps", type=int, default=50)
