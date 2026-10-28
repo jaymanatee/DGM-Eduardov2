@@ -65,8 +65,11 @@ def train(args: argparse.Namespace) -> None:
         output_dir=args.output,
         max_steps=args.steps,
         learning_rate=args.learning_rate,
-        per_device_train_batch_size=args.num_generations,
-        gradient_accumulation_steps=args.grad_accum,
+        # Each step generates prompts_per_step groups of num_generations answers at once, then
+        # trains on them batch_size at a time. With 8 x 3,072 tokens in one batch the fp32
+        # logits alone take 14 GiB; generating more at once is almost free (EXPERIMENTS.md).
+        per_device_train_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.prompts_per_step * args.num_generations // args.batch_size,
         num_generations=args.num_generations,
         max_completion_length=args.max_completion_length,
         temperature=args.temperature,
@@ -136,8 +139,12 @@ def main() -> None:
     )
     parser.add_argument("--output", default="rlm/weights/final_rlm_lora")
     parser.add_argument("--steps", type=int, default=300)
-    parser.add_argument("--num-generations", type=int, default=8)
-    parser.add_argument("--grad-accum", type=int, default=1)
+    parser.add_argument("--num-generations", type=int, default=8, help="answers per problem")
+    parser.add_argument("--prompts-per-step", type=int, default=1, help="problems per step")
+    parser.add_argument(
+        "--batch-size", type=int, default=1,
+        help="answers per forward/backward pass; must divide prompts-per-step x num-generations",
+    )
     parser.add_argument("--max-completion-length", type=int, default=3072)
     parser.add_argument("--learning-rate", type=float, default=5e-6)
     parser.add_argument("--temperature", type=float, default=1.0)
