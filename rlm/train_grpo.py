@@ -40,6 +40,7 @@ import argparse
 import json
 from pathlib import Path
 
+from rlm import disable_cudnn_attention
 from rlm.data import load_domain_dataset, load_gsm8k
 from rlm.rewards import accuracy_reward, domain_reward, format_reward, origin_accuracy_reward
 
@@ -48,6 +49,8 @@ def train(args: argparse.Namespace) -> None:
     import torch
     from peft import LoraConfig
     from trl import GRPOConfig, GRPOTrainer
+
+    disable_cudnn_attention()  # 19x faster generation on the DGX
 
     if args.data == "gsm8k":
         dataset = load_gsm8k("train", n_examples=args.n_examples, seed=args.seed)

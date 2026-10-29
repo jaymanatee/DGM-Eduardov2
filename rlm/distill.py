@@ -24,6 +24,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
+from rlm import disable_cudnn_attention
 from rlm.data import load_domain_dataset
 from rlm.verifier import NumericVerifier, OriginVerifier, Verifier
 
@@ -128,6 +129,7 @@ def generate_traces(
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
+    disable_cudnn_attention()
     problems = [dataset[i] for i in range(len(dataset))]
     rows = _load_checkpoint(checkpoint)
     start_idx = max((r["problem_idx"] for r in rows), default=-1) + 1

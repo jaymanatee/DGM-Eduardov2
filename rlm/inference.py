@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from api.schemas import ReasoningResponse, VerifierVerdict
+from rlm import disable_cudnn_attention
 from rlm.data import build_prompt
 from rlm.rewards import extract_answer, has_valid_format
 from rlm.verifier import ExactMatchVerifier, NumericVerifier, Verifier
@@ -89,6 +90,8 @@ class ReasoningModel:
         import torch
         from peft import PeftModel
         from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        disable_cudnn_attention()
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
         dtype = torch.bfloat16 if device == "cuda" else torch.float32

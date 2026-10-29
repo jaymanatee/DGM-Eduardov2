@@ -35,6 +35,7 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
+from rlm import disable_cudnn_attention
 from rlm.data import load_domain_dataset, load_gsm8k
 from rlm.verifier import NumericVerifier, OriginVerifier, Verifier
 
@@ -90,6 +91,8 @@ def load_model(base_model: str, adapter: str | None):
     """Base model in bf16, with the LoRA adapter merged on top when one is given."""
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    disable_cudnn_attention()
 
     tokenizer = AutoTokenizer.from_pretrained(base_model)
     tokenizer.padding_side = "left"
