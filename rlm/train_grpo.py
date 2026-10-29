@@ -32,17 +32,57 @@ Our choices (see EXPERIMENTS.md):
 * ``--max-completion-length 3072``: the teacher's verified traces reach 3,072 tokens, and an
   answer cut before ``<answer>`` never gets any reward.
 * The same chat template as ``distill.py`` and ``evaluate.py`` (``enable_thinking=True``).
+
+Training in several sessions (the DGX's 16 GB sessions last 8 hours at most): run the
+same command every session with ``--resume-from-checkpoint last --max-hours 7.5``. The
+first session starts from scratch; each one stops cleanly before its time runs out, after
+saving a checkpoint, and the next one continues from it with the same learning-rate
+schedule, as if the run had never stopped.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 
 from rlm import disable_cudnn_attention
 from rlm.data import load_domain_dataset, load_gsm8k
 from rlm.rewards import accuracy_reward, domain_reward, format_reward, origin_accuracy_reward
+
+
+def resolve_resume(value: str | None, output: str) -> str | None:
+    """``last`` -> newest ``checkpoint-*`` in ``output``, or None to start from scratch."""
+    if value != "last":
+        return value
+    from transformers.trainer_utils import get_last_checkpoint
+
+    last = get_last_checkpoint(output) if Path(output).is_dir() else None
+    print(f"resuming from {last}" if last else f"no checkpoint in {output}: starting from scratch")
+    return last
+
+
+def time_limit_callback(max_hours: float):
+    """Stop after the step that crosses ``max_hours``, saving a checkpoint first.
+
+    The session would otherwise kill the run mid-step, losing every step since the last
+    checkpoint (or corrupting the checkpoint being written).
+    """
+    from transformers import TrainerCallback
+
+    class TimeLimit(TrainerCallback):
+        def on_train_begin(self, args, state, control, **kwargs):
+            self.start = time.monotonic()
+
+        def on_step_end(self, args, state, control, **kwargs):
+            if time.monotonic() - self.start >= max_hours * 3600:
+                print(f"time limit of {max_hours} h reached at step {state.global_step}")
+                control.should_save = True
+                control.should_training_stop = True
+            return control
+
+    return TimeLimit()
 
 
 def train(args: argparse.Namespace) -> None:
@@ -118,8 +158,14 @@ def train(args: argparse.Namespace) -> None:
         args=config,
         train_dataset=dataset,
         peft_config=peft_config,
+        callbacks=[time_limit_callback(args.max_hours)] if args.max_hours else None,
     )
-    trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
+    trainer.train(resume_from_checkpoint=resolve_resume(args.resume_from_checkpoint, args.output))
+    if trainer.state.global_step < args.steps:
+        # Stopped by --max-hours: the checkpoint is the result, not a final adapter.
+        print(f"stopped at step {trainer.state.global_step} of {args.steps}; run the same "
+              "command again with --resume-from-checkpoint last to continue")
+        return
     trainer.save_model(args.output)
 
     # Reward, length and loss per step, for the curves in EXPERIMENTS.md.
@@ -163,7 +209,12 @@ def main() -> None:
     parser.add_argument(
         "--resume-from-checkpoint",
         default=None,
-        help="path to a checkpoint-XXX folder to continue an interrupted run (24h sessions!)",
+        help="checkpoint-XXX folder to continue an interrupted run, or 'last' for the newest "
+        "one in --output (starts from scratch if there is none)",
+    )
+    parser.add_argument(
+        "--max-hours", type=float, default=None,
+        help="save a checkpoint and stop after this many hours of training (8 h sessions)",
     )
     parser.add_argument("--seed", type=int, default=0)
     train(parser.parse_args())
