@@ -54,8 +54,10 @@ entrada.
 | `rlm/weights/sft_prueba/` | Adaptador LoRA de la prueba corta (0,1 épocas). Solo sirvió para medir memoria y velocidad | 2026-10-16 · Configuración del SFT y prueba corta |
 | `rlm/weights/sft_lora/` | Adaptador LoRA del SFT completo (2 épocas). Es el elegido; `checkpoint-75` es el de la época 1 | 2026-10-24 · SFT completo |
 | `reports/prueba_eval.json` | Modelo base en los 4 primeros problemas de `test` | 2026-10-16 · Modelo base en 4 problemas de test |
-| `reports/phase1_eval_test.json`, `reports/phase1_eval_test_ood.json` | Respuestas completas y veredictos del base y del SFT en `test` y `test_ood` | 2026-10-26 · Evaluación del base y del SFT |
-| `reports/phase1_analysis_test.md`, `reports/phase1_analysis_test_ood.md` | Análisis de esas evaluaciones (`rlm/analyze_eval.py`) | 2026-10-26 · Evaluación del base y del SFT |
+| `rlm/weights/final_rlm_lora/` | Adaptador LoRA del GRPO (400 pasos sobre `sft_lora`), con `log_history.json` y `completions/`. Es el modelo final de la fase 1 | 2026-11-02 · GRPO completo |
+| `reports/phase1_eval_test.json`, `reports/phase1_eval_test_ood.json` | Respuestas completas y veredictos del base, el SFT y el GRPO en `test` y `test_ood` | 2026-10-26 · Evaluación del base y del SFT; 2026-11-03 · Evaluación del GRPO |
+| `reports/phase1_analysis_test.md`, `reports/phase1_analysis_test_ood.md` | Análisis de esas evaluaciones (`rlm/analyze_eval.py`) | 2026-10-26 · Evaluación del base y del SFT; 2026-11-03 · Evaluación del GRPO |
+| `reports/sft_rerun_test.json`, `reports/sft_rerun_ood.json` | El mismo SFT evaluado de nuevo, en las condiciones del GRPO | 2026-11-03 · Evaluación del GRPO |
 
 ---
 
@@ -956,3 +958,202 @@ primer lote de 50 fue siete veces más lento que los siguientes. Sospechamos de 
 compitiendo en el nodo, pero no lo hemos comprobado. Para el GRPO, que genera varias respuestas
 por problema en cada paso, este coste fijo pesa mucho; vLLM evitaría buena parte, pero no está
 instalado.
+
+### 2026-10-28 · Fase 1 · Recompensas del GRPO: exactitud, formato y esquema del JSON
+
+**Qué queríamos saber.** Qué debe premiar el GRPO además de acertar, y con qué pesos, sabiendo que
+cada recompensa cambia lo que aprende el modelo.
+
+**Qué hicimos.** Añadir a `rlm/rewards.py` dos recompensas y usarlas junto a `format_reward`:
+
+| Recompensa | Qué comprueba | Peso |
+|---|---|---|
+| `format_reward` | `<think>…</think><answer>…</answer>` estricto | 0,2 |
+| `origin_accuracy_reward` | `OriginVerifier`, binaria | 1,0 |
+| `domain_reward` | JSON con exactamente las 3 claves; `NINGUNO` si y solo si no es originario; criterio dentro de los de la regla; porcentaje entre 0 y 100 | 0,3 |
+
+La exactitud pesa más que las otras dos juntas: si no, una respuesta bien formada pero incorrecta
+cobraría casi lo mismo que una correcta. `domain_reward` acepta el porcentaje también como texto
+(`"40.03"`) porque así lo escribe el 63 % de las trazas válidas del profesor. Descartamos penalizar
+la longitud: TRL normaliza las recompensas dentro de cada grupo, de modo que en un grupo con la
+misma exactitud un término pequeño de longitud decidiría toda la ventaja. Las respuestas cortadas ya
+sacan 0 en las tres.
+
+**Qué pasó.** Aplicadas a las 600 respuestas guardadas en `reports/phase1_eval_*.json`, la exactitud
+coincide con el pass@1 de `evaluate.py` en las 600. En el SFT, formato y dominio dan los dos 0,835:
+todas las respuestas con `<answer>` cumplen ya el esquema.
+
+**Qué concluimos.** Lo último es una advertencia: partiendo del SFT, `domain_reward` podría no
+añadir ninguna señal. Lo comprobamos en la entrada del GRPO completo.
+
+### 2026-10-29 · Fase 1 · Memoria y velocidad del GRPO: cuDNN era la causa de los 300 ms por token
+
+**Qué queríamos saber.** Por qué la primera prueba del GRPO se quedaba sin memoria y por qué la
+generación tardaba unos 20 minutos por paso. Esta entrada corrige la del 2026-10-26 sobre la
+velocidad de generación.
+
+**Qué hicimos.**
+
+- Memoria: leer el error (13,92 GiB pedidos en `convert_to_fp32`). Son los logits de 8 × 3.072 tokens
+  con 152.000 palabras de vocabulario en un solo lote. Separamos generar de entrenar:
+  `--batch-size 1` con acumulación de gradientes, de forma que se genera a la vez pero se entrena
+  respuesta a respuesta (`--prompts-per-step`).
+- Velocidad: descartar causas una a una en `MIG 1g.18gb` con scripts de diagnóstico sueltos y
+  repetir la medida con `torch.backends.cuda.enable_cudnn_sdp(False)`.
+
+**Qué pasó.**
+
+| Comprobación | Resultado |
+|---|---|
+| Hilos de CPU | 4 hilos para 4 núcleos: bien |
+| Coste de lanzar una operación a la GPU | 3,8 µs |
+| Multiplicación de matrices en la GPU | 104 TFLOP/s |
+| Bucle de Python | 0,47 s del total medido |
+| `cProfile` | `scaled_dot_product_attention` se lleva 1,126 s de 1,204 s |
+| Generación con cuDNN | 288 ms por token |
+| Generación sin cuDNN | **15 ms por token** |
+
+La explicación que manejamos es que cuDNN prepara en la CPU un plan para cada longitud de secuencia
+nueva y, al generar, la longitud cambia en cada token. Tras el cambio, una prueba de 3 pasos del GRPO
+en 16 GiB tardó 327 s, unos 1,8 minutos por paso, y no se quedó sin memoria.
+
+En el portátil (RTX 5070 Laptop de 8 GB) se genera a 33 ms por token, pero el paso de entrenamiento
+falla con `device not ready` con 7.668 de 8.151 MiB ocupados. El GRPO no cabe ahí.
+
+**Qué concluimos.** La conclusión de la entrada del 2026-10-26 era errónea: no era el coste de lanzar
+operaciones desde Python, sino cuDNN, y vLLM no hacía falta para resolverlo. Nadie exige vLLM en el
+enunciado. Los tiempos apuntados antes de este cambio (destilación y evaluaciones) están inflados.
+`disable_cudnn_attention()` está en `rlm/__init__.py` y lo usan `train_grpo`, `evaluate`, `distill` e
+`inference`.
+
+### 2026-10-30 · Fase 1 · Entrenar el GRPO en varias sesiones de 8 horas
+
+**Qué queríamos saber.** Cómo entrenar sin la partición `3g.71gb`, en la que llevábamos dos días en
+cola, cuando las sesiones de `1g.18gb` duran 8 horas como máximo.
+
+**Qué hicimos.** Añadir a `train_grpo.py` `--resume-from-checkpoint last` (busca el último checkpoint
+en `--output`, o empieza de cero si no hay) y `--max-hours` (guarda un checkpoint y para limpiamente
+antes de que acabe la sesión). Se lanza el mismo comando en cada sesión. Probamos 3 sesiones simuladas
+en local.
+
+**Qué pasó.** El learning rate continúa sin saltos (5e-6, 3,33e-6, 1,67e-6) y el historial acumula
+todos los pasos. Cada checkpoint ocupa unos 211 MB. `train_runtime` solo cuenta la última sesión, así
+que para el tiempo total hay que sumar `step_time`.
+
+**Qué concluimos.** La tirada se puede repartir sin afectar a la planificación del learning rate.
+
+### 2026-11-02 · Fase 1 · GRPO completo: mejora el formato y corta menos, la exactitud no muestra tendencia
+
+**Qué queríamos saber.** Si el GRPO mejora al SFT optimizando directamente la recompensa verificable,
+y si en 400 pasos deja de aprender o se queda corto.
+
+**Qué hicimos.** Partir de `rlm/weights/sft_lora`, en `MIG 1g.18gb`:
+
+```
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True nohup uv run --extra train \
+    python -m rlm.train_grpo --steps 400 --save-steps 20 \
+    --resume-from-checkpoint last --max-hours 7.5 \
+    --output rlm/weights/final_rlm_lora >> runs/grpo_run01.log 2>&1 &
+```
+
+Un problema por paso, 8 respuestas por problema, 3.072 tokens como máximo, learning rate 5e-6 con
+bajada lineal, temperatura 1,0, sin KL (`beta` 0), recorte 0,2, pesos 0,2 / 1,0 / 0,3. Son 400
+problemas y 3.200 respuestas, el 10 % de `train`.
+
+**Qué pasó.** Tardó unas 9,8 horas en dos sesiones, 88 s por paso de media. Medias por bloques de 50
+pasos, a partir de `log_history.json`:
+
+| Pasos | Acierto | Formato | Cortadas | Longitud | Pasos sin señal |
+|---|---|---|---|---|---|
+| 1-50 | 0,62 | 0,94 | 0,06 | 1.445 | 0,38 |
+| 51-100 | 0,73 | 0,95 | 0,04 | 1.494 | 0,38 |
+| 101-150 | 0,69 | 0,97 | 0,03 | 1.421 | 0,34 |
+| 151-200 | 0,63 | 0,95 | 0,05 | 1.522 | 0,38 |
+| 201-250 | 0,72 | 0,96 | 0,04 | 1.555 | 0,30 |
+| 251-300 | 0,69 | 0,96 | 0,04 | 1.551 | 0,34 |
+| 301-350 | 0,77 | 0,99 | 0,01 | 1.438 | 0,38 |
+| 351-400 | 0,64 | 0,97 | 0,03 | 1.463 | 0,48 |
+
+- **Acierto:** sube 1,05 puntos por cada 100 pasos, sin distinguirse del ruido (permutaciones,
+  p = 0,47). A ojo, el cambio real en los 400 pasos podría ir de unos -7 a +16 puntos: la curva no
+  demuestra que aprendiera ni que no.
+- **Formato y cortadas:** entre los primeros y los últimos 100 pasos, el formato pasa de 0,95 a 0,98 y
+  las cortadas de 0,05 a 0,02 (p ≈ 0,02 en ambos, sin corregir por hacer varias pruebas).
+- **Pasos sin señal:** en 149 de 400 (37 %) las 8 respuestas sacan la misma recompensa, 110 con todas
+  bien y 39 con todas mal. La ventaja es cero y ese paso no enseña nada.
+- **`domain_reward`:** coincide con la de formato en 397 de 400 pasos, así que no aporta señal propia.
+- **Pesos:** el adaptador cambia un 0,76 % respecto al SFT (norma de la diferencia entre norma).
+- **Acierto en entrenamiento:** sale más alto (0,69, muestreando) que el pass@1 en `test` (0,625,
+  greedy). Esperábamos lo contrario. Puede influir que al muestrear se corten menos respuestas (3,6 %
+  frente a 10,5 %), o que los problemas de `train` sean más fáciles. No lo hemos comprobado.
+
+**Qué concluimos.** Con un problema por paso, la curva es demasiado ruidosa para decidir si faltaban
+pasos. No repetiríamos la tirada igual. Si hubiera otra, probaríamos primero `--prompts-per-step 4`,
+que debería reducir los pasos sin señal y el ruido, comparando en validación y no en `test`.
+`domain_reward` se queda porque el enunciado pide una tercera recompensa, pero no podemos atribuirle
+ninguna mejora.
+
+### 2026-11-03 · Fase 1 · Evaluación del GRPO: mejora un poco, y el mismo modelo cambia de veredicto en el 26 % de los problemas
+
+**Qué queríamos saber.** Si el GRPO supera al SFT en `test` y `test_ood`, y cuánta de esa diferencia
+se debe a las condiciones de evaluación: el SFT se había evaluado con cuDNN, lote 50 y `MIG 3g.71gb`.
+
+**Qué hicimos.** Evaluar el GRPO sin cuDNN en `MIG 1g.18gb`, y repetir el SFT en esas condiciones para
+medir el ruido, siempre sin azar y con un máximo de 3.072 tokens:
+
+```
+uv run --extra train python -m rlm.evaluate --data rlm/data/test.jsonl \
+    --adapters grpo=rlm/weights/final_rlm_lora --batch-size 16
+uv run --extra train python -m rlm.evaluate --data rlm/data/test.jsonl \
+    --adapters sft=rlm/weights/sft_lora --batch-size 16 --out reports/sft_rerun_test.json
+# y lo mismo con rlm/data/test_ood.jsonl (reports/sft_rerun_ood.json)
+```
+
+**Qué pasó.**
+
+| | SFT original | SFT repetido | GRPO |
+|---|---|---|---|
+| pass@1 `test` (200) | 56,0 % | 58,5 % | 62,5 % |
+| pass@1 `test_ood` (100) | 58,0 % | 59,0 % | 66,0 % |
+| pass@1 conjunto (300) | 56,7 % | 58,7 % | 63,7 % |
+| Formato válido (300) | 82,3 % | 84,0 % | 89,3 % |
+| Cortadas (300) | 17,7 % | 16,0 % | 10,7 % |
+
+- **Ruido:** las dos evaluaciones del mismo SFT discrepan en el veredicto de 78 de 300 problemas (26 %),
+  42 a favor de la repetida y 36 en contra (p = 0,57). Solo 3 de 300 respuestas salen idénticas. Con
+  decodificación greedy, un cambio de redondeo que altere un token cambia todo lo que viene detrás.
+- **GRPO frente al SFT repetido:** +5 puntos. Arregla 42 problemas y estropea 27 (McNemar exacto,
+  p = 0,091). Por separado, p = 0,27 en `test` y p = 0,26 en `test_ood`. Frente al SFT original salían
+  +7 puntos y p = 0,022: ese margen extra no se sostiene al repetir la evaluación.
+- **Cortadas:** 37 respuestas dejan de cortarse y 21 empiezan a cortarse (p = 0,048). El formato da las
+  mismas cifras. De las 48 cortadas del SFT, 18 pasan a acertar, 19 terminan mal y 11 siguen cortadas.
+
+| Tipo de fallo (300) | SFT repetido | GRPO |
+|---|---|---|
+| Veredicto incorrecto | 44 | 57 |
+| Cortada sin respuesta | 48 | 32 |
+| Porcentaje incorrecto | 30 | 19 |
+| Criterio incorrecto | 2 | 1 |
+
+Los veredictos incorrectos suben por decir «no originario» cuando sí lo es (29 → 41); al revés casi no
+cambian (15 → 16). Un ejemplo es el problema 0 de `test`, una bomba 8413 con la regla «CTSH, salvo a
+partir de la partida 8482». Los rodamientos (8482.10) son de la UE con declaración de proveedor, pero
+el GRPO los trata como no originarios por caer en la excepción, concluye `NINGUNO` y calcula 16,51 %,
+cuando la respuesta es originario, CTSH y 0 %.
+
+Entre SFT original y repetido, los grupos también bailan: en `test_ood`, `NINGUNO` pasa de 23 a 18 de
+30 sin cambiar el modelo. Por eso no sacamos conclusiones por regla o criterio de las tablas de
+`reports/phase1_analysis_*.md`, que además comparan con el SFT original. Por ejemplo, la aparente
+caída del GRPO en CTSH en `test` (de 14,3 % a 7,1 %) desaparece con el SFT repetido: 2 de 28 en ambos.
+
+**Qué concluimos.** El GRPO mejora un poco: +5 puntos de pass@1 sin significación estadística, menos
+cortes y mejor formato en el límite de la significación. A cambio hay más veredictos incorrectos: parte
+de las respuestas que antes se cortaban ahora terminan mal. El ejemplo de la bomba apunta a un error
+concreto, confundir la excepción de la regla con el origen del material, pero no hemos contado cuántas
+veces ocurre. El pass@1 de una
+sola evaluación greedy tiene más ruido del que suponíamos, y eso afecta también a comparaciones
+anteriores con diferencias pequeñas; la del base frente al SFT (+28 y +25 puntos) queda muy por encima.
+
+Detectar 5 puntos con un 80 % de probabilidad requeriría unos 700 problemas. Descartamos evaluar en
+1.000 nuevos por falta de tiempo, así que la mejora del pass@1 queda como indicio, no como resultado
+demostrado. Si se comparan más modelos, hay que hacerlo en las mismas condiciones.
