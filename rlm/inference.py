@@ -7,14 +7,17 @@ request carries the expected answer, it also runs the verifier and returns the v
 Configuration comes from environment variables so that the same code runs on your
 laptop, on the DGX and inside Docker:
 
-* ``ARCA_RLM_BASE_MODEL``  base model id (default ``Qwen/Qwen3-0.6B``)
-* ``ARCA_RLM_ADAPTER``     path to your trained LoRA adapter (e.g. ``rlm/weights/final_rlm_lora``)
-* ``ARCA_RLM_VERIFIER``    ``numeric`` (default) or ``exact_match``; register yours in ``VERIFIERS``
+* ``ARCA_RLM_BASE_MODEL``  base model id (default: the one in the adapter's ``adapter_config.json``)
+* ``ARCA_RLM_ADAPTER``     path to the trained LoRA adapter (final: ``rlm/weights/grpo_pps3``)
+* ``ARCA_RLM_VERIFIER``    ``origin`` (default), ``numeric`` or ``exact_match``
+
+Generation matches ``rlm/evaluate.py`` (same prompt, adapter merged, greedy, 3,072 tokens), so
+the verdicts of ``/reasoning`` are comparable with the pass@1 in ``reports/``.
 
 Try it from the command line::
 
-    ARCA_RLM_ADAPTER=rlm/weights/smoke_lora \\
-        uv run python -m rlm.inference "If 5x - 3 = 12, what is 5x + 3?"
+    ARCA_RLM_ADAPTER=rlm/weights/grpo_pps3 \\
+        uv run --extra train python -m rlm.inference "<problem statement>"
 """
 
 from __future__ import annotations
@@ -29,14 +32,18 @@ from pathlib import Path
 from api.schemas import ReasoningResponse, VerifierVerdict
 from rlm import disable_cudnn_attention
 from rlm.data import build_prompt
+from rlm.evaluate import render_prompt
 from rlm.rewards import extract_answer, has_valid_format
-from rlm.verifier import ExactMatchVerifier, NumericVerifier, Verifier
+from rlm.verifier import ExactMatchVerifier, NumericVerifier, OriginVerifier, Verifier
 
 VERIFIERS: dict[str, type[Verifier]] = {
+    "origin": OriginVerifier,
     "numeric": NumericVerifier,
     "exact_match": ExactMatchVerifier,
-    # Tu turno: register your domain verifier here, e.g. "sql": SQLResultVerifier
 }
+
+# The evaluation's limit: with fewer tokens, many correct answers would be cut off.
+DEFAULT_MAX_NEW_TOKENS = 3072
 
 THINK_PATTERN = re.compile(r"<think>(?P<think>.*?)</think>", re.DOTALL)
 
@@ -66,16 +73,15 @@ def _base_model_from_adapter(adapter: str) -> str:
 class ReasoningModel:
     base_model: str
     adapter_path: str | None = None
-    verifier_name: str = "numeric"
+    verifier_name: str = "origin"
 
     @classmethod
     def from_env(cls) -> ReasoningModel:
         adapter = os.environ.get("ARCA_RLM_ADAPTER") or None
         if adapter is None:
             raise NotImplementedError(
-                "Phase 1 is not wired yet: set ARCA_RLM_ADAPTER to the folder of your trained "
-                "LoRA adapter (see rlm/README.md). For a quick check you can point it to the "
-                "adapter produced by the smoke test, rlm/weights/smoke_lora."
+                "Phase 1 is not wired yet: set ARCA_RLM_ADAPTER to the folder of the trained "
+                "LoRA adapter, rlm/weights/grpo_pps3 (see .env.example)."
             )
         if not Path(adapter).exists():
             raise FileNotFoundError(f"ARCA_RLM_ADAPTER points to a missing folder: {adapter}")
@@ -83,7 +89,7 @@ class ReasoningModel:
         return cls(
             base_model=base_model,
             adapter_path=adapter,
-            verifier_name=os.environ.get("ARCA_RLM_VERIFIER", "numeric"),
+            verifier_name=os.environ.get("ARCA_RLM_VERIFIER", "origin"),
         )
 
     def load(self) -> None:
@@ -100,32 +106,38 @@ class ReasoningModel:
             self.base_model, dtype=dtype, device_map=device
         )
         if self.adapter_path:
-            model = PeftModel.from_pretrained(model, self.adapter_path)
+            # Merged as in evaluate.py: otherwise rounding differs and greedy outputs diverge.
+            model = PeftModel.from_pretrained(model, self.adapter_path).merge_and_unload()
         self.model = model.eval()
         self.verifier = VERIFIERS[self.verifier_name]()
 
-    def generate(self, question: str, max_new_tokens: int = 1024) -> tuple[str, int]:
-        """Return the raw completion and the number of generated tokens."""
+    def generate(
+        self, question: str, max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS
+    ) -> tuple[str, int]:
+        """Return the raw completion and the number of generated tokens (greedy)."""
         import torch
 
-        text = self.tokenizer.apply_chat_template(
-            build_prompt(question), tokenize=False, add_generation_prompt=True
-        )
+        text = render_prompt(self.tokenizer, build_prompt(question))
         inputs = self.tokenizer(text, return_tensors="pt").to(self.model.device)
         with torch.no_grad():
             out = self.model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
-                do_sample=True,
-                temperature=0.6,
-                top_p=0.95,
+                # Override the sampling defaults in Qwen3's generation_config, as evaluate.py does.
+                do_sample=False,
+                temperature=None,
+                top_p=None,
+                top_k=None,
                 pad_token_id=self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
             )
         new_tokens = out[0, inputs["input_ids"].shape[1] :]
         return self.tokenizer.decode(new_tokens, skip_special_tokens=True), int(new_tokens.numel())
 
     def answer(
-        self, question: str, expected_answer: str | None = None, max_new_tokens: int = 1024
+        self,
+        question: str,
+        expected_answer: str | None = None,
+        max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
     ) -> ReasoningResponse:
         raw, n_tokens = self.generate(question, max_new_tokens)
         thinking, answer = split_thinking(raw)

@@ -20,6 +20,10 @@ x-arca: &arca
     # Caché de modelos compartida entre ejecuciones. En la DGX apunta HF_CACHE_DIR a un
     # disco grande y compartido para no descargar Qwen cien veces.
     - ${HF_CACHE_DIR:-./hf_cache}:/data/hf_cache
+  # ARCA_RLM_ADAPTER, ARCA_TEAM, etc. llegan al contenedor desde .env, si existe.
+  env_file:
+    - path: .env
+      required: false
   environment:
     - HF_HOME=/data/hf_cache
     - HF_TOKEN=${HF_TOKEN:-}
