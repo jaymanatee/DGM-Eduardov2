@@ -54,7 +54,11 @@ entrada.
 | `rlm/weights/sft_prueba/` | Adaptador LoRA de la prueba corta (0,1 épocas). Solo sirvió para medir memoria y velocidad | 2026-10-16 · Configuración del SFT y prueba corta |
 | `rlm/weights/sft_lora/` | Adaptador LoRA del SFT completo (2 épocas). Es el elegido; `checkpoint-75` es el de la época 1 | 2026-10-24 · SFT completo |
 | `reports/prueba_eval.json` | Modelo base en los 4 primeros problemas de `test` | 2026-10-16 · Modelo base en 4 problemas de test |
-| `rlm/weights/final_rlm_lora/` | Adaptador LoRA del GRPO (400 pasos sobre `sft_lora`), con `log_history.json` y `completions/`. Es el modelo final de la fase 1 | 2026-11-02 · GRPO completo |
+| `rlm/weights/final_rlm_lora/` | Adaptador LoRA del GRPO 1 (400 pasos de 1 problema sobre `sft_lora`), con `log_history.json` y `completions/` | 2026-11-02 · GRPO completo |
+| `rlm/weights/grpo_pps3/` | Adaptador LoRA del GRPO 2 (270 pasos de 3 problemas sobre `sft_lora`), con `log_history.json` y `completions/`. Es el modelo final de la fase 1 | 2026-11-05 · GRPO 2 |
+| `reports/grpo2_test.json`, `reports/grpo2_ood.json` | Respuestas completas y veredictos del GRPO 2 en `test` y `test_ood` | 2026-11-05 · Evaluación del GRPO 2 |
+| `reports/phase1_analysis_grpo2_test.md`, `reports/phase1_analysis_grpo2_test_ood.md` | Análisis de base, SFT repetido, GRPO 1 y GRPO 2 (`rlm/analyze_eval.py --compare sft grpo2`) | 2026-11-05 · Evaluación del GRPO 2 |
+| `reports/phase1_grpo_curves.png` | Curvas de recompensa, formato, cortadas y longitud de los dos GRPO | 2026-11-05 · GRPO 2 |
 | `reports/phase1_eval_test.json`, `reports/phase1_eval_test_ood.json` | Respuestas completas y veredictos del base, el SFT y el GRPO en `test` y `test_ood` | 2026-10-26 · Evaluación del base y del SFT; 2026-11-03 · Evaluación del GRPO |
 | `reports/phase1_analysis_test.md`, `reports/phase1_analysis_test_ood.md` | Análisis de esas evaluaciones (`rlm/analyze_eval.py`) | 2026-10-26 · Evaluación del base y del SFT; 2026-11-03 · Evaluación del GRPO |
 | `reports/sft_rerun_test.json`, `reports/sft_rerun_ood.json` | El mismo SFT evaluado de nuevo, en las condiciones del GRPO | 2026-11-03 · Evaluación del GRPO |
@@ -1157,3 +1161,113 @@ anteriores con diferencias pequeñas; la del base frente al SFT (+28 y +25 punto
 Detectar 5 puntos con un 80 % de probabilidad requeriría unos 700 problemas. Descartamos evaluar en
 1.000 nuevos por falta de tiempo, así que la mejora del pass@1 queda como indicio, no como resultado
 demostrado. Si se comparan más modelos, hay que hacerlo en las mismas condiciones.
+
+### 2026-11-05 · Fase 1 · GRPO 2: tres problemas por paso, casi todos los pasos con señal y respuestas más cortas
+
+**Qué queríamos saber.** Si dar más problemas por paso reduce los pasos sin señal y el ruido del GRPO 1,
+y si así mejora al SFT de forma clara.
+
+**Qué hicimos.** Partir otra vez de `rlm/weights/sft_lora`, en `MIG 1g.18gb`:
+
+```
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True nohup uv run --extra train \
+    python -m rlm.train_grpo --steps 270 --prompts-per-step 3 --learning-rate 7.5e-6 --save-steps 20 \
+    --resume-from-checkpoint last --max-hours 7.5 \
+    --output rlm/weights/grpo_pps3 >> runs/grpo_pps3.log 2>&1 &
+```
+
+Tres problemas por paso con 8 respuestas cada uno (24 respuestas, acumulación de gradiente 24). El
+resto, igual que en el GRPO 1. Son 810 problemas, el 20 % de `train`, frente a 400. Elegimos el
+learning rate para que pasos × learning rate quede como en el GRPO 1 (270 × 7,5e-6 ≈ 400 × 5e-6 =
+2e-3). Con la partición de 16 GB no cabían 4 problemas por paso, como habíamos propuesto.
+
+**Qué pasó.** Sumando `step_time`, unas 44,6 horas: 11 minutos por paso de mediana (máximo 12),
+siete veces lo del GRPO 1 con tres veces más respuestas. Habíamos estimado unos 3 minutos sin medirlo.
+No hemos comprobado por qué. Una posibilidad es que generar 24 respuestas a la vez obligue a leer una
+caché de atención tres veces mayor en cada token. Como cada sesión dura como mucho 7,5 horas, fueron al
+menos seis. Medias por bloques de 45 pasos (135 problemas):
+
+| Pasos | Acierto | Formato | Cortadas | Longitud | Grupos sin señal |
+|---|---|---|---|---|---|
+| 1-45 | 0,71 | 0,97 | 0,03 | 1.454 | 0,39 |
+| 46-90 | 0,70 | 0,98 | 0,02 | 1.454 | 0,40 |
+| 91-135 | 0,73 | 0,96 | 0,04 | 1.491 | 0,45 |
+| 136-180 | 0,69 | 0,98 | 0,02 | 1.480 | 0,42 |
+| 181-225 | 0,73 | 0,97 | 0,03 | 1.420 | 0,47 |
+| 226-270 | 0,74 | 0,98 | 0,02 | 1.362 | 0,50 |
+
+- **Señal:** el 44 % de los grupos saca la misma recompensa en sus 8 respuestas, como en el GRPO 1 (37 %).
+  Pero ahora solo 19 de 270 pasos (7 %) se quedan sin ningún grupo útil, frente a 149 de 400 (37 %).
+  En los dos GRPO, los grupos sin señal aumentan hacia el final: cuantas más veces acierta las 8, menos
+  aprende de ese problema.
+- **Acierto:** +1,5 puntos por cada 100 pasos, sin distinguirse del ruido (permutaciones, p = 0,34).
+- **Formato y cortadas:** mejoran un poco (0,96 → 0,98 y 0,036 → 0,018 entre los primeros y los últimos
+  34 pasos), pero sin significación (p = 0,13 y p = 0,18). Empezaron más altos que en el GRPO 1.
+- **Longitud:** baja de 1.464 a 1.369 tokens, unos 36 por cada 100 pasos (p = 0,053). En el GRPO 1 no
+  bajaba.
+- **`domain_reward`:** coincide con la de formato en 260 de 270 pasos. Sigue sin aportar señal propia.
+- **Pesos:** el adaptador cambia un 0,98 % respecto al SFT, frente al 0,76 % del GRPO 1. La similitud de
+  coseno entre los dos cambios es 0,06. Los dos GRPO mueven los pesos en direcciones casi distintas,
+  aunque más parecidas de lo que saldría por azar en 17 millones de parámetros (del orden de 0,0002).
+
+`reports/phase1_grpo_curves.png` pone las dos tiradas en el mismo eje de problemas vistos. Mientras
+coinciden (primeros 400 problemas), las medias móviles de acierto, formato y longitud se solapan. Lo
+que añade el GRPO 2 es la segunda mitad, donde la longitud baja.
+
+**Qué concluimos.** Tres problemas por paso eliminan casi todos los pasos que no enseñan nada, a cambio
+de 4,5 veces más tiempo total. Las curvas de entrenamiento siguen sin mostrar que el acierto suba. La
+señal más clara es que el modelo acorta sus respuestas. La comparación en validación que nos habíamos
+propuesto no la hicimos: los dos GRPO se comparan en `test` y `test_ood` (entrada siguiente).
+
+### 2026-11-05 · Fase 1 · Evaluación del GRPO 2: +8,7 puntos sobre el SFT, la primera mejora significativa
+
+**Qué queríamos saber.** Si el GRPO 2 supera al SFT y al GRPO 1, en las mismas condiciones que la
+evaluación del 03/11.
+
+**Qué hicimos.** Lo mismo que con el GRPO 1: sin cuDNN, `MIG 1g.18gb`, lote 16, greedy, 3.072 tokens.
+
+```
+uv run --extra train python -m rlm.evaluate --data rlm/data/test.jsonl \
+    --adapters grpo2=rlm/weights/grpo_pps3 --batch-size 16 --out reports/grpo2_test.json
+# y lo mismo con rlm/data/test_ood.jsonl (reports/grpo2_ood.json)
+```
+
+**Qué pasó.**
+
+| | SFT repetido | GRPO 1 | GRPO 2 |
+|---|---|---|---|
+| pass@1 `test` (200) | 58,5 % | 62,5 % | 66,0 % |
+| pass@1 `test_ood` (100) | 59,0 % | 66,0 % | 70,0 % |
+| pass@1 conjunto (300) | 58,7 % | 63,7 % | 67,3 % |
+| Formato válido (300) | 84,0 % | 89,3 % | 91,3 % |
+| Cortadas (300) | 16,0 % | 10,7 % | 8,7 % |
+| Tokens de media (300) | 1.621 | 1.552 | 1.462 |
+
+- **GRPO 2 frente al SFT repetido:** +8,7 puntos. Arregla 51 problemas y estropea 25 (McNemar exacto,
+  p = 0,004; IC 95 % de la diferencia, de +3,0 a +14,3 puntos). Por separado, p = 0,040 en `test` y
+  p = 0,061 en `test_ood`.
+- **GRPO 2 frente al GRPO 1:** +3,7 puntos. Arregla 35 y estropea 24 (p = 0,19; IC de -1,3 a +8,7). La
+  diferencia va en la misma dirección en `test` (+3,5) y en `test_ood` (+4), pero cambian 59 veredictos,
+  menos que los 78 que cambiaron al repetir el mismo SFT.
+
+| Tipo de fallo (300) | SFT repetido | GRPO 1 | GRPO 2 |
+|---|---|---|---|
+| Veredicto incorrecto | 44 | 57 | 57 |
+| Cortada sin respuesta | 48 | 32 | 26 |
+| Porcentaje incorrecto | 30 | 19 | 14 |
+| Criterio incorrecto | 2 | 1 | 1 |
+
+Las cortadas y los porcentajes mal calculados siguen bajando, pero los veredictos incorrectos no. Por
+dirección: «no originario» cuando sí lo es, 29 → 41 → 36; «originario» cuando no lo es, 15 → 16 → 21.
+
+El problema 0 de `test` (la bomba 8413 con la excepción de la partida 8482) sigue fallando, pero de otra
+forma. El GRPO 2 llega a que todos los materiales son originarios y que se cumple CTSH, y luego vuelve a
+preguntarse si los rodamientos de la 8482 invalidan la regla. Repite la duda hasta agotar los 3.072
+tokens sin dar respuesta.
+
+**Qué concluimos.** El GRPO 2 es el modelo final de la fase 1. Supera al SFT con significación
+estadística y no es peor que el GRPO 1 en ninguna métrica. Lo elegimos mirando `test` y `test_ood`, que
+son también los conjuntos con los que lo comparamos, así que su ventaja sobre el GRPO 1 puede estar algo
+inflada. Esa ventaja, además, no se distingue del ruido de evaluación. La mejora viene de cortar menos y
+calcular mejor el porcentaje. Decidir bien con una excepción de partida sigue sin resolverse, y el ejemplo
+de la bomba sugiere que parte de las respuestas cortadas son dudas de este tipo que no se cierran.
