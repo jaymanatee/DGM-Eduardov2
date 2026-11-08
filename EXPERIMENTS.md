@@ -1271,3 +1271,115 @@ son también los conjuntos con los que lo comparamos, así que su ventaja sobre 
 inflada. Esa ventaja, además, no se distingue del ruido de evaluación. La mejora viene de cortar menos y
 calcular mejor el porcentaje. Decidir bien con una excepción de partida sigue sin resolverse, y el ejemplo
 de la bomba sugiere que parte de las respuestas cortadas son dudas de este tipo que no se cierran.
+
+### 2026-11-06 · Fase 1 · Cinco fallos del GRPO 2: la mitad de los errores viene de la tolerancia y de las operaciones insuficientes
+
+**Qué queríamos saber.** Por qué se equivoca el modelo final (`grpo_pps3`), con casos concretos y
+comprobando si cada uno es un patrón o una anécdota.
+
+**Qué hicimos.** Cruzar los 98 fallos de `test` y `test_ood` con las ramas de cada problema (las
+`branches` del generador), leer el `<think>` de los casos elegidos y contar cuántas veces se repite
+cada error. Para ver si el GRPO tuvo ocasión de corregirlos, cruzamos también los grupos de
+`completions/` con las ramas de `train`.
+
+**Qué pasó.** Dos ramas concentran los fallos:
+
+| Rama (300 problemas) | Problemas | Acierto GRPO 2 | Acierto en el resto | Acierto SFT repetido |
+|---|---|---|---|---|
+| Originario gracias a la tolerancia | 42 | 12 % | 76 % | 10 % |
+| Solo operaciones insuficientes | 28 | 32 % | 71 % | 39 % |
+
+Las dos ramas no se solapan: suman 56 de los 98 fallos en 70 de los 300 problemas. En el resto de
+problemas, el GRPO 2 acierta el 82 % (188 de 230). Las demás ramas no se separan del ruido (Fisher,
+p > 0,1), salvo «la tolerancia no amplía el MaxNOM», donde acierta más (92 %).
+
+**Fallo 1 · `test` 8 · la tolerancia se compara con el total.** Bomba 8413.70, CETA, CTSH con
+tolerancia del 10 %. Lo único que impide CTSH es el cuerpo de bomba (8413.70, tercer país): 15,53 €
+de 210 €, un 7,40 %. Es originario. El modelo clasifica bien los seis materiales, suma los dos no
+originarios y escribe: «The percentage of non-originario materials is (52.15 / 210.00) * 100 ≈ 24.83%.
+This is over 10%, so the tolerance doesn't apply here». El enunciado dice lo contrario: «En esa suma
+solo entran los materiales que impiden cumplirlo, no todos los no originarios». Después cuenta los
+rodamientos (UE con declaración, que él mismo había marcado como originarios) entre los que impiden
+CTSH por estar en la partida 8482 excluida. De los 37 fallos con tolerancia, en 30 no aparece el
+porcentaje de los materiales que bloquean, y en unos 16 se ve el total comparado con el 10 %
+(búsqueda de texto, aproximada).
+
+**Fallo 2 · `test` 24 · la confusión al revés.** Otra bomba con tolerancia. Aquí el modelo sí aísla el
+material que bloquea («the only non-originario material in the same subpartida is the body… 69.81 /
+970.00 = 7.17%. That's under 10%, so the tolerance applies») y acierta veredicto y criterio. Pero
+responde `pct_no_originario` = 7,17 cuando se pedía el total no originario (54,42 %). Los dos
+porcentajes del problema se le mezclan en las dos direcciones. Además, el cálculo es 7,20 %, no 7,17 %.
+
+**Fallo 3 · `test` 17 · ve las operaciones insuficientes y no lo aplica.** Motor 8501.40, UE-Japón;
+solo se ha pintado y embalado. El modelo lo dice al principio («The operations are painting and
+packaging, which are not sufficient for origin»), pasa a comprobar CTH y RVC, y responde originario
+por RVC. En 18 de los 19 fallos de esta rama, el producto sería originario sin la norma de las
+operaciones: el modelo la ignora y aplica la regla. Y 8 de sus 9 aciertos son casos en que la regla
+tampoco se cumple, así que acierta por otra vía. De los 19 problemas en que esta norma es lo único que
+lo hace no originario, acierta 1.
+
+**Fallo 4 · `test` 0 · una duda que no se cierra.** Bomba 8413.70 con rodamientos 8482.10 de la UE con
+declaración. El modelo llega a la respuesta («all materials are originario… CTSH is satisfied.
+Therefore, the product is originario») y vuelve a preguntarse si la excepción de la partida 8482
+afecta a un material originario. Repite esa duda hasta agotar los 3.072 tokens. Es la misma confusión
+que en el fallo 1, sobre si la excepción afecta también a materiales originarios. No la hemos
+contado en el resto de las cortadas.
+
+**Fallo 5 · `test_ood` 26 · la tolerancia como requisito.** Silla 9401.39, UE-Mercosur, CC. Ningún
+material no originario es del capítulo 94, así que CC se cumple sin tolerancia. El modelo lo ve,
+material a material, pero luego escribe: «Total non-originary value is 42.91 + 39.42 = 82.33 €…
+48.43%. This is way over the 10% to[lerance]», y concluye no originario. Trata la tolerancia como una
+condición más. Es poco frecuente: de los 36 casos en que dice «no originario» y sí lo es, 29 son de
+tolerancia (fallo 1) y solo 4 de este tipo.
+
+**Por qué el GRPO no lo arregla.** Es el mismo error que tenía el profesor (entrada del 2026-10-12 sobre
+la tirada E6: comparaba con el 10 % la suma de todos los no originarios). El profesor acertó el 13 % de
+los problemas con tolerancia (25 de 196) y el 20 % de los de operaciones insuficientes (37 de 188),
+frente a cerca del 70 % en el resto. El SFT vio así 25 trazas con tolerancia y 37 con operaciones
+insuficientes de 1.282. En el GRPO, un problema solo enseña si alguna de sus 8 respuestas acierta:
+
+| Problemas de entrenamiento (GRPO 2) | Vistos | Acierto medio | Las 8 mal | Con señal |
+|---|---|---|---|---|
+| Tolerancia | 96 | 0,16 | 69 | 25 |
+| Operaciones insuficientes | 62 | 0,31 | 32 | 28 |
+| Resto | 652 | 0,84 | 3 | 380 |
+
+En el GRPO 1 pasa lo mismo (30 de 41 y 16 de 39 con las 8 mal). Los grupos en que todas fallan son
+casi todos de estas dos ramas (101 de 104), justo donde el modelo más tendría que aprender.
+
+**Qué concluimos.** El modelo no falla al azar. La mitad de sus errores viene de dos normas que el
+profesor tampoco sabía aplicar. El SFT las copió de él y el GRPO no puede corregirlas, porque el modelo
+casi nunca acierta en esos problemas y no hay respuesta buena de la que aprender. Para arreglarlo
+habría que darle ejemplos correctos de estas dos ramas: trazas escritas desde el motor de origen
+(`rlm/origin_engine.py` ya tiene la traza material a material) o un profesor mayor, filtrado con el
+verificador. No lo hemos probado.
+
+### 2026-11-07 · Fase 1 · El paso de GRPO a mano, y por qué el recorte no actuó en nuestros entrenamientos
+
+**Qué queríamos saber.** Escribir el paso de GRPO sin `GRPOTrainer` (`rlm/grpo_step.py`) y comprobar
+en qué se parece a lo que hizo TRL en nuestras dos tiradas.
+
+**Qué hicimos.** Implementar las cinco funciones: ventajas normalizadas dentro del grupo, ratio de
+políticas en espacio logarítmico, objetivo recortado con `min(ρ·A, clip(ρ, 1-ε, 1+ε)·A)`, estimador
+de la KL de DeepSeekMath y la pérdida, con media por respuesta (`1/|o_i|`) y luego por grupo (`1/G`).
+Pasan los 6 tests del enunciado, más dos nuestros: la KL con `beta > 0` y la fracción de recorte.
+
+**Qué pasó.** Al comparar con `training_args.bin` y `log_history.json` de las dos tiradas:
+
+- **El recorte nunca actuó:** `clip_ratio/region_mean` vale 0 en los 270 pasos del GRPO 2, y también en
+  el GRPO 1. Con `num_iterations` = 1, TRL genera las respuestas y hace una sola actualización con
+  ellas. La política que generó (`π_θ_old`) es la misma que se actualiza, así que ρ = 1 en todos los
+  tokens y el recorte no tiene nada que limitar. El gradiente sí existe: con ρ = 1, el objetivo se
+  reduce a un gradiente de política con la ventaja como peso. El recorte solo actuaría reutilizando
+  cada lote para varias actualizaciones (`num_iterations` > 1).
+- **La KL tampoco:** usamos `beta` = 0, así que nada ataba el modelo al SFT salvo el learning rate
+  pequeño y el número de pasos. Por eso medimos cuánto cambiaban los pesos (0,76 % y 0,98 %).
+- **La normalización es distinta:** nuestro `grpo_loss` promedia primero dentro de cada respuesta y
+  luego entre respuestas, como la fórmula de las diapositivas. TRL usó `loss_type="dapo"`, que promedia
+  todos los tokens del lote juntos. Así, cada token pesa lo mismo y las respuestas largas cuentan más.
+  Con la media por respuesta, cada token de una respuesta larga pesa menos.
+
+**Qué concluimos.** En nuestras tiradas, GRPO se comportó como un gradiente de política con ventajas
+normalizadas por grupo, sin recorte ni KL. Los dos mecanismos están implementados y probados en
+`grpo_step.py`, pero para que el recorte importe habría que reutilizar cada lote de respuestas, cosa
+que no hicimos.

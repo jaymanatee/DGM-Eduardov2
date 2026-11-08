@@ -17,8 +17,6 @@ the log-probs; you compute the loss.
 Run the tests to check your implementation::
 
     uv run pytest tests/test_grpo_step.py -v
-
-They are marked as expected failures until you implement the functions.
 """
 
 from __future__ import annotations
@@ -37,8 +35,10 @@ def group_advantages(rewards: torch.Tensor, eps: float = 1e-4, scale: bool = Tru
     Returns:
         Advantages with shape ``(G,)``. A positive advantage means "better than the group".
     """
-    # Tu turno.
-    raise NotImplementedError
+    centered = rewards - rewards.mean()
+    if not scale:
+        return centered
+    return centered / (rewards.std() + eps)
 
 
 def policy_ratio(logp_new: torch.Tensor, logp_old: torch.Tensor) -> torch.Tensor:
@@ -46,8 +46,7 @@ def policy_ratio(logp_new: torch.Tensor, logp_old: torch.Tensor) -> torch.Tensor
 
     Both inputs have shape ``(G, T)``. Return a tensor of the same shape.
     """
-    # Tu turno.
-    raise NotImplementedError
+    return torch.exp(logp_new - logp_old)
 
 
 def clipped_objective(
@@ -63,8 +62,10 @@ def clipped_objective(
     Returns:
         Per-token objective, shape ``(G, T)``, *before* masking and averaging.
     """
-    # Tu turno.
-    raise NotImplementedError
+    adv = advantages.unsqueeze(-1)
+    unclipped = ratio * adv
+    clipped = torch.clamp(ratio, 1 - epsilon, 1 + epsilon) * adv
+    return torch.minimum(unclipped, clipped)
 
 
 def kl_penalty(logp_new: torch.Tensor, logp_ref: torch.Tensor) -> torch.Tensor:
@@ -72,8 +73,8 @@ def kl_penalty(logp_new: torch.Tensor, logp_ref: torch.Tensor) -> torch.Tensor:
 
     exp(logp_ref - logp_new) - (logp_ref - logp_new) - 1. Always >= 0. Shape ``(G, T)``.
     """
-    # Tu turno.
-    raise NotImplementedError
+    delta = logp_ref - logp_new
+    return torch.exp(delta) - delta - 1
 
 
 def grpo_loss(
@@ -93,5 +94,32 @@ def grpo_loss(
     ``mean_advantage``, ``clip_fraction`` (share of tokens where clipping was active) and
     ``kl`` for logging.
     """
-    # Tu turno.
-    raise NotImplementedError
+    logp_old = logp_old.detach()
+    mask = mask.to(logp_new.dtype)
+    lengths = mask.sum(dim=-1).clamp(min=1)  # |o_i|
+
+    def masked_mean(per_token: torch.Tensor) -> torch.Tensor:
+        """1/G Σ_i 1/|o_i| Σ_t x_{i,t}, over completion tokens only."""
+        return ((per_token * mask).sum(dim=-1) / lengths).mean()
+
+    advantages = group_advantages(rewards)
+    ratio = policy_ratio(logp_new, logp_old)
+    per_token = clipped_objective(ratio, advantages, epsilon)
+
+    kl = torch.zeros_like(per_token)
+    if beta > 0:
+        if logp_ref is None:
+            raise ValueError("beta > 0 needs logp_ref, the log-probs of the reference model")
+        kl = kl_penalty(logp_new, logp_ref.detach())
+        per_token = per_token - beta * kl
+
+    loss = -masked_mean(per_token)
+
+    adv = advantages.unsqueeze(-1)
+    clipped = ((ratio > 1 + epsilon) & (adv > 0)) | ((ratio < 1 - epsilon) & (adv < 0))
+    stats = {
+        "mean_advantage": advantages.mean().item(),
+        "clip_fraction": ((clipped.to(mask.dtype) * mask).sum() / mask.sum().clamp(min=1)).item(),
+        "kl": masked_mean(kl).item(),
+    }
+    return loss, stats
