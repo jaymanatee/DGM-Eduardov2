@@ -78,27 +78,48 @@ ACCEPTED = [
     pytest.param(EXPECTED_MULTI, answer(pct=39.5), id="pct-en-el-limite-inferior"),
     pytest.param(EXPECTED_MULTI, answer(pct="40,3 %"), id="pct-como-texto-con-coma-y-%"),
     pytest.param(EXPECTED_MULTI, answer(originario="true"), id="booleano-como-texto"),
-    pytest.param(
-        EXPECTED_MULTI, "```json\n" + answer() + "\n```", id="con-fences-de-codigo"
-    ),
+    pytest.param(EXPECTED_MULTI, "```json\n" + answer() + "\n```", id="con-fences-de-codigo"),
     pytest.param(EXPECTED_NO, answer(False, "NINGUNO"), id="no-originario-correcto"),
 ]
 
 # (expected, texto de <answer>, fragmento que tiene que aparecer en el motivo)
 REJECTED = [
-    pytest.param(EXPECTED_MULTI, answer(False, "NINGUNO"), "veredicto incorrecto", id="veredicto-contrario"),
-    pytest.param(EXPECTED_NO, answer(True, "CTH"), "veredicto incorrecto", id="dice-originario-y-no-lo-es"),
-    pytest.param(EXPECTED_MULTI, answer(criterio="RVC"), "no válido", id="criterio-que-no-se-cumple"),
-    pytest.param(EXPECTED_MULTI, answer(criterio="NINGUNO"), "no válido", id="originario-sin-criterio"),
+    pytest.param(
+        EXPECTED_MULTI, answer(False, "NINGUNO"), "veredicto incorrecto", id="veredicto-contrario"
+    ),
+    pytest.param(
+        EXPECTED_NO, answer(True, "CTH"), "veredicto incorrecto", id="dice-originario-y-no-lo-es"
+    ),
+    pytest.param(
+        EXPECTED_MULTI, answer(criterio="RVC"), "no válido", id="criterio-que-no-se-cumple"
+    ),
+    pytest.param(
+        EXPECTED_MULTI, answer(criterio="NINGUNO"), "no válido", id="originario-sin-criterio"
+    ),
     pytest.param(EXPECTED_NO, answer(False, "CTH"), "no válido", id="no-originario-con-criterio"),
     pytest.param(EXPECTED_MULTI, answer(pct=40.51), "fuera de", id="pct-justo-fuera-por-arriba"),
     pytest.param(EXPECTED_MULTI, answer(pct=39.49), "fuera de", id="pct-justo-fuera-por-abajo"),
     pytest.param(EXPECTED_MULTI, '{"originario": true, "criterio": "CTH"', "JSON", id="json-roto"),
     pytest.param(EXPECTED_MULTI, "[1, 2]", "JSON", id="answer-no-es-un-objeto"),
     pytest.param(EXPECTED_MULTI, "originario: sí", "JSON", id="texto-libre"),
-    pytest.param(EXPECTED_MULTI, '{"originario": true, "criterio": "CTH"}', "pct_no_originario", id="falta-pct"),
-    pytest.param(EXPECTED_MULTI, '{"criterio": "CTH", "pct_no_originario": 40}', "originario", id="falta-originario"),
-    pytest.param(EXPECTED_MULTI, '{"originario": true, "pct_no_originario": 40}', "criterio", id="falta-criterio"),
+    pytest.param(
+        EXPECTED_MULTI,
+        '{"originario": true, "criterio": "CTH"}',
+        "pct_no_originario",
+        id="falta-pct",
+    ),
+    pytest.param(
+        EXPECTED_MULTI,
+        '{"criterio": "CTH", "pct_no_originario": 40}',
+        "originario",
+        id="falta-originario",
+    ),
+    pytest.param(
+        EXPECTED_MULTI,
+        '{"originario": true, "pct_no_originario": 40}',
+        "criterio",
+        id="falta-criterio",
+    ),
     pytest.param(EXPECTED_MULTI, answer(originario=1), "originario", id="originario-como-1"),
     pytest.param(EXPECTED_MULTI, answer(originario=None), "originario", id="originario-null"),
     pytest.param(EXPECTED_MULTI, answer(criterio=3), "criterio", id="criterio-numerico"),
@@ -140,10 +161,14 @@ def test_last_number_trick_does_not_work():
 
 
 def test_is_correct_matches_verify():
-    for expected, model_answer in [(EXPECTED_MULTI, answer()), (EXPECTED_MULTI, answer(False, "NINGUNO"))]:
-        assert VERIFIER.is_correct(model_answer, expected) == VERIFIER.verify(
-            completion(model_answer), expected
-        ).is_correct
+    for expected, model_answer in [
+        (EXPECTED_MULTI, answer()),
+        (EXPECTED_MULTI, answer(False, "NINGUNO")),
+    ]:
+        assert (
+            VERIFIER.is_correct(model_answer, expected)
+            == VERIFIER.verify(completion(model_answer), expected).is_correct
+        )
 
 
 def test_is_correct_with_none_prediction():

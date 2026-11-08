@@ -31,7 +31,9 @@ def main() -> None:
     parser.add_argument("--data", default="rlm/data/test.jsonl")
     parser.add_argument("--question", default=None, help="your own statement instead of --data")
     parser.add_argument("--model", default="Qwen/Qwen3-1.7B")
-    parser.add_argument("--adapter", default="rlm/weights/sft_lora", help="'none' for the base model")
+    parser.add_argument(
+        "--adapter", default="rlm/weights/sft_lora", help="'none' for the base model"
+    )
     parser.add_argument("--max-new-tokens", type=int, default=3072)
     args = parser.parse_args()
 

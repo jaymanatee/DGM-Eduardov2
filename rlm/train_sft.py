@@ -159,7 +159,9 @@ def main() -> None:
     parser.add_argument("--max-length", type=int, default=4096)
     parser.add_argument("--lora-rank", type=int, default=16)
     parser.add_argument(
-        "--eval-fraction", type=float, default=0.1,
+        "--eval-fraction",
+        type=float,
+        default=0.1,
         help="fraction of problems held out for eval_loss (0 disables validation)",
     )
     parser.add_argument("--eval-steps", type=int, default=20)

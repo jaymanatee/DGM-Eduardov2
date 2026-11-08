@@ -22,7 +22,6 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any
 
-
 ORIGINS = ("UE", "SOCIO", "TERCERO", "DESCONOCIDO")
 ORIGINATING_ORIGINS = ("UE", "SOCIO")
 CRITERIA_PRIORITY = ("WO", "CC", "CTH", "CTSH", "MAXNOM", "RVC")
@@ -51,7 +50,9 @@ class Material:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Material:
-        return cls(data["name"], data["code"], data["origin"], _frac(data["value"]), data["declared"])
+        return cls(
+            data["name"], data["code"], data["origin"], _frac(data["value"]), data["declared"]
+        )
 
     @property
     def originating(self) -> bool:
@@ -125,7 +126,9 @@ def _check_alternative(
     # MAXNOM / RVC: la tolerancia nunca ensancha un umbral de valor
     denominator = exw if alt.basis == "EXW" else fob
     assert alt.threshold is not None
-    limit = alt.threshold * denominator if alt.kind == "MAXNOM" else (1 - alt.threshold) * denominator
+    limit = (
+        alt.threshold * denominator if alt.kind == "MAXNOM" else (1 - alt.threshold) * denominator
+    )
     ok = total <= limit
     would_pass_with_tolerance = (not ok) and total <= limit + tolerance * denominator
     return ok, False, total == limit, would_pass_with_tolerance
@@ -152,7 +155,9 @@ def evaluate(
         "subdivision_distinta": any(
             m.code[:4] == heading and m.code[:6] != product_code[:6] for m in non_orig
         ),
-        "excepcion_partida": any(m.code[:4] in excluded and m.code[:4] != heading for m in non_orig),
+        "excepcion_partida": any(
+            m.code[:4] in excluded and m.code[:4] != heading for m in non_orig
+        ),
         "proveedor_sin_declaracion": any(
             m.origin in ORIGINATING_ORIGINS and not m.declared for m in materials
         ),
@@ -193,7 +198,10 @@ def evaluate(
         if ok:
             satisfied.add(alt.kind)
             used_tolerance.append(used_tol)
-        trace.append(f"{alt.kind}: {'cumple' if ok else 'no cumple'}" + (" (con tolerancia)" if used_tol else ""))
+        trace.append(
+            f"{alt.kind}: {'cumple' if ok else 'no cumple'}"
+            + (" (con tolerancia)" if used_tol else "")
+        )
     flags["tolerancia_usada"] = bool(used_tolerance) and all(used_tolerance)
 
     ordered = sorted(satisfied, key=CRITERIA_PRIORITY.index)

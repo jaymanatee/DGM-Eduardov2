@@ -94,7 +94,11 @@ def parse_number(token: str) -> float | None:
         token = token.replace(thousands, "").replace(decimal, ".")
     elif "," in token:
         head, _, tail = token.rpartition(",")
-        token = token.replace(",", ".") if len(tail) <= 2 and "," not in head else token.replace(",", "")
+        token = (
+            token.replace(",", ".")
+            if len(tail) <= 2 and "," not in head
+            else token.replace(",", "")
+        )
     elif token.count(".") > 1:
         token = token.replace(".", "")
     try:
@@ -230,32 +234,71 @@ def section_pass1(results: dict) -> str:
         n, k = len(r), sum(x["is_correct"] for x in r)
         kl = sum(x.get("is_correct_lenient", x["is_correct"]) for x in r)
         lo, hi = wilson(k, n)
-        rows.append([name, n, f"{k} ({pct(k / n)})", f"{pct(lo)} – {pct(hi)}", f"{kl} ({pct(kl / n)})",
-                     pct(sum(x.get("has_valid_format", False) for x in r) / n),
-                     pct(sum(x.get("truncated", False) for x in r) / n)])
+        rows.append(
+            [
+                name,
+                n,
+                f"{k} ({pct(k / n)})",
+                f"{pct(lo)} – {pct(hi)}",
+                f"{kl} ({pct(kl / n)})",
+                pct(sum(x.get("has_valid_format", False) for x in r) / n),
+                pct(sum(x.get("truncated", False) for x in r) / n),
+            ]
+        )
     n = len(next(iter(results.values()))["rows"])
     half = 100 * 1.96 * math.sqrt(0.25 / n) if n else 0
-    return "## 1. pass@1\n\n" + table(
-        ["Modelo", "n", "Aciertos", "IC 95 %", "Lenient", "Formato válido", "Cortadas"], rows
-    ) + (f"\n\nCon n = {n}, el intervalo llega a medir unos ±{half:.0f} puntos: diferencias de "
-         "pass@1 menores que eso entre dos modelos no son concluyentes por sí solas (la "
-         "comparación por parejas de la sección 2 es más fina).")
+    return (
+        "## 1. pass@1\n\n"
+        + table(
+            ["Modelo", "n", "Aciertos", "IC 95 %", "Lenient", "Formato válido", "Cortadas"], rows
+        )
+        + (
+            f"\n\nCon n = {n}, el intervalo llega a medir unos ±{half:.0f} puntos: diferencias de "
+            "pass@1 menores que eso entre dos modelos no son concluyentes por sí solas (la "
+            "comparación por parejas de la sección 2 es más fina)."
+        )
+    )
 
 
 def section_paired(results: dict, a: str, b: str) -> str:
     ra, rb = results[a]["rows"], results[b]["rows"]
-    if len(ra) != len(rb) or any(x["question"] != y["question"] for x, y in zip(ra, rb)):
-        return f"## 2. {a} frente a {b}\n\nNo son los mismos problemas en el mismo orden: no se compara."
-    counts = Counter((x["is_correct"], y["is_correct"]) for x, y in zip(ra, rb))
-    both, only_a, only_b, none = counts[(True, True)], counts[(True, False)], counts[(False, True)], counts[(False, False)]
+    if len(ra) != len(rb) or any(
+        x["question"] != y["question"] for x, y in zip(ra, rb, strict=True)
+    ):
+        return (
+            f"## 2. {a} frente a {b}\n\n"
+            "No son los mismos problemas en el mismo orden: no se compara."
+        )
+    counts = Counter((x["is_correct"], y["is_correct"]) for x, y in zip(ra, rb, strict=True))
+    both, only_a, only_b, none = (
+        counts[(True, True)],
+        counts[(True, False)],
+        counts[(False, True)],
+        counts[(False, False)],
+    )
     # Exact McNemar test (two-sided) on the discordant pairs.
     d = only_a + only_b
-    p = min(1.0, 2 * sum(math.comb(d, i) for i in range(min(only_a, only_b) + 1)) / 2**d) if d else 1.0
-    return f"## 2. {a} frente a {b} (mismos problemas)\n\n" + table(
-        ["", "Problemas"],
-        [[f"Aciertan los dos", both], [f"Solo {b} (arreglados)", only_b],
-         [f"Solo {a} (estropeados)", only_a], ["Fallan los dos", none]],
-    ) + f"\n\nTest de McNemar exacto sobre los {d} problemas en que discrepan: p = {p:.3g}".replace(".", ",") + "."
+    p = (
+        min(1.0, 2 * sum(math.comb(d, i) for i in range(min(only_a, only_b) + 1)) / 2**d)
+        if d
+        else 1.0
+    )
+    return (
+        f"## 2. {a} frente a {b} (mismos problemas)\n\n"
+        + table(
+            ["", "Problemas"],
+            [
+                ["Aciertan los dos", both],
+                [f"Solo {b} (arreglados)", only_b],
+                [f"Solo {a} (estropeados)", only_a],
+                ["Fallan los dos", none],
+            ],
+        )
+        + (
+            f"\n\nTest de McNemar exacto sobre los {d} problemas en que discrepan: p = {p:.3g}"
+        ).replace(".", ",")
+        + "."
+    )
 
 
 def section_failures(results: dict) -> str:
@@ -267,9 +310,13 @@ def section_failures(results: dict) -> str:
         types.update(c)
     order = [t for t, _ in types.most_common() if t != "acierto"]
     rows = [[t] + [per_model[m].get(t, 0) for m in results] for t in order]
-    return "## 3. Tipos de fallo\n\n" + table(["Tipo", *results], rows) + (
-        "\n\n`tool_call_en_vez_de_answer`: escribe `<tool_call>` tras `</think>`. "
-        "`cortada_sin_answer`: llega al límite de tokens sin responder."
+    return (
+        "## 3. Tipos de fallo\n\n"
+        + table(["Tipo", *results], rows)
+        + (
+            "\n\n`tool_call_en_vez_de_answer`: escribe `<tool_call>` tras `</think>`. "
+            "`cortada_sin_answer`: llega al límite de tokens sin responder."
+        )
     )
 
 
@@ -301,8 +348,10 @@ def section_groups(results: dict, teacher: dict | None) -> str:
         if labels[label] < MIN_GROUP:
             continue
         row = [label, labels[label]]
-        row += [pct(sum(per_model[m][label]) / len(per_model[m][label])) if per_model[m][label] else "—"
-                for m in results]
+        row += [
+            pct(sum(per_model[m][label]) / len(per_model[m][label])) if per_model[m][label] else "—"
+            for m in results
+        ]
         if teacher:
             k, n = teacher.get(label, (0, 0))
             row.append(f"{pct(k / n)} (n={n})" if n else "—")
@@ -311,7 +360,8 @@ def section_groups(results: dict, teacher: dict | None) -> str:
         "\n\nProfesor: trazas verificadas / generadas en los 500 problemas de destilación "
         "(Qwen3-4B, temperatura 0,6, problemas de `train`). Orientativo: no son los mismos "
         "problemas ni la misma forma de generar."
-        if teacher else ""
+        if teacher
+        else ""
     )
     return f"## 4. pass@1 por grupo (n ≥ {MIN_GROUP})\n\n" + table(header, rows) + note
 
@@ -323,9 +373,15 @@ def section_length(results: dict) -> str:
         ko = [r["n_tokens"] for r in res["rows"] if not r["is_correct"]]
         all_ = sorted(r["n_tokens"] for r in res["rows"])
         p95 = all_[int(0.95 * (len(all_) - 1))] if all_ else 0
-        rows.append([name, f"{statistics.median(ok):.0f}" if ok else "—",
-                     f"{statistics.median(ko):.0f}" if ko else "—", p95,
-                     pct(sum(r.get("truncated", False) for r in res["rows"]) / len(res["rows"]))])
+        rows.append(
+            [
+                name,
+                f"{statistics.median(ok):.0f}" if ok else "—",
+                f"{statistics.median(ko):.0f}" if ko else "—",
+                p95,
+                pct(sum(r.get("truncated", False) for r in res["rows"]) / len(res["rows"])),
+            ]
+        )
     return "## 5. Longitud\n\n" + table(
         ["Modelo", "Mediana (aciertos)", "Mediana (fallos)", "p95", "Cortadas"], rows
     )
@@ -342,19 +398,32 @@ def section_reasoning(results: dict) -> str:
             vals = [c[key] for c in checks if c[key] is not None]
             row.append(f"{pct(sum(vals) / len(vals))} (n={len(vals)})" if vals else "—")
         dubious = sum(
-            1 for c in checks
+            1
+            for c in checks
             if c["porcentaje_en_razonamiento"] is False and c["suma_en_razonamiento"] is not True
         )
         row.append(dubious)
         rows.append(row)
-    return "## 6. ¿Acierta por las razones correctas? (solo respuestas acertadas, heurístico)\n\n" + table(
-        ["Modelo", "Aciertos", "Cita la partida", "Porcentaje en el razonamiento",
-         "Suma en el razonamiento", "Aciertos sin el cálculo a la vista"], rows
-    ) + (
-        "\n\nSe busca en el `<think>` el porcentaje esperado (±0,5 puntos) y la suma esperada de "
-        "materiales no originarios (porcentaje × precio EXW leído del enunciado, ±0,5 %). Los "
-        "casos con 0 % no se comprueban. La última columna son aciertos cuyo razonamiento no "
-        "contiene el porcentaje ni la suma: candidatos a acierto por casualidad, para leer a mano."
+    return (
+        "## 6. ¿Acierta por las razones correctas? (solo respuestas acertadas, heurístico)\n\n"
+        + table(
+            [
+                "Modelo",
+                "Aciertos",
+                "Cita la partida",
+                "Porcentaje en el razonamiento",
+                "Suma en el razonamiento",
+                "Aciertos sin el cálculo a la vista",
+            ],
+            rows,
+        )
+        + (
+            "\n\nSe busca en el `<think>` el porcentaje esperado (±0,5 puntos) y la suma "
+            "esperada de materiales no originarios (porcentaje × precio EXW leído del "
+            "enunciado, ±0,5 %). Los casos con 0 % no se comprueban. La última columna son "
+            "aciertos cuyo razonamiento no contiene el porcentaje ni la suma: candidatos a "
+            "acierto por casualidad, para leer a mano."
+        )
     )
 
 
@@ -367,17 +436,23 @@ def section_candidates(results: dict, focus: str, per_type: int = 3) -> str:
     for t, idx in sorted(by_type.items(), key=lambda kv: -len(kv[1])):
         if t == "acierto":
             continue
-        out.append(f"**{t}** ({len(idx)} problemas): índices {idx[:15]}{' …' if len(idx) > 15 else ''}\n")
+        out.append(
+            f"**{t}** ({len(idx)} problemas): índices {idx[:15]}{' …' if len(idx) > 15 else ''}\n"
+        )
         for i in idx[:per_type]:
             r = rows[i]
-            groups = ", ".join(g for g in groups_of(r["expected"], r.get("branches")) if g != "todos")
+            groups = ", ".join(
+                g for g in groups_of(r["expected"], r.get("branches")) if g != "todos"
+            )
             predicted = (r.get("predicted") or r.get("raw", "")[-160:]).replace("\n", " ")
-            out.append(f"- Problema {i} [{groups}]\n  - esperado: `{r['expected']}`\n"
-                       f"  - modelo: `{predicted[:200]}`\n  - motivo: {r.get('detail') or '—'}")
+            out.append(
+                f"- Problema {i} [{groups}]\n  - esperado: `{r['expected']}`\n"
+                f"  - modelo: `{predicted[:200]}`\n  - motivo: {r.get('detail') or '—'}"
+            )
         out.append("")
     out.append(
-        f"Para ver el razonamiento completo: `uv run --extra train python -m rlm.try_model <índice>`"
-        f" (o leer `raw` en el JSON)."
+        "Para ver el razonamiento completo: `uv run --extra train python -m rlm.try_model <índice>`"
+        " (o leer `raw` en el JSON)."
     )
     return "\n".join(out)
 
@@ -392,9 +467,16 @@ def main() -> None:
     parser.add_argument("eval_json", help="file written by rlm/evaluate.py")
     parser.add_argument("--teacher", default="rlm/data/sft_traces.jsonl")
     parser.add_argument("--no-teacher", action="store_true", help="skip the teacher column")
-    parser.add_argument("--compare", nargs=2, default=None, metavar=("A", "B"),
-                        help="models for the paired comparison (default: the first two)")
-    parser.add_argument("--focus", default=None, help="model whose failures are listed (default: last)")
+    parser.add_argument(
+        "--compare",
+        nargs=2,
+        default=None,
+        metavar=("A", "B"),
+        help="models for the paired comparison (default: the first two)",
+    )
+    parser.add_argument(
+        "--focus", default=None, help="model whose failures are listed (default: last)"
+    )
     parser.add_argument("--out", default=None, help="default: reports/phase1_analysis_<data>.md")
     args = parser.parse_args()
 
@@ -408,7 +490,10 @@ def main() -> None:
     if not args.no_teacher and Path(args.teacher).exists():
         teacher = teacher_rates(Path(args.teacher))
 
-    sections = [f"# Análisis de `{path.name}`\n\nModelos: {', '.join(names)}.", section_pass1(results)]
+    sections = [
+        f"# Análisis de `{path.name}`\n\nModelos: {', '.join(names)}.",
+        section_pass1(results),
+    ]
     pair = args.compare or (names[:2] if len(names) >= 2 else None)
     if pair:
         sections.append(section_paired(results, *pair))

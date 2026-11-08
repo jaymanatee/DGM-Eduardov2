@@ -124,7 +124,12 @@ RULES: dict[str, Rule] = {
         Rule("TCA-8507", "8507", "TCA", (Alt("CTH"), Alt("MAXNOM", pct(50))), source="propuesta"),
         Rule("TCA-8414", "8414", "TCA", (Alt("CTH"),), source="propuesta"),
         # Relleno: sustituir por reglas reales.
-        Rule("UE-JP-8501", "8501", "UE-JP", (Alt("CTH", excluded_headings=("8503",)), Alt("RVC", pct(50), basis="FOB")),),
+        Rule(
+            "UE-JP-8501",
+            "8501",
+            "UE-JP",
+            (Alt("CTH", excluded_headings=("8503",)), Alt("RVC", pct(50), basis="FOB")),
+        ),
         Rule("UE-KR-9403", "9403", "UE-KR", (Alt("CC"), Alt("MAXNOM", pct(40)))),
         Rule("CETA-8413", "8413", "CETA", (Alt("CTSH", excluded_headings=("8482",)),)),
         Rule("UE-KR-8479", "8479", "UE-KR", (Alt("MAXNOM", pct(40)),)),
@@ -360,7 +365,8 @@ def describe_alternative(alt: Alt) -> str:
     if alt.excluded_headings:
         heads = ", ".join(alt.excluded_headings)
         plural = "partidas" if len(alt.excluded_headings) > 1 else "partida"
-        except_text = f", salvo a partir de {'las' if len(alt.excluded_headings) > 1 else 'la'} {plural} {heads}"
+        article = "las" if len(alt.excluded_headings) > 1 else "la"
+        except_text = f", salvo a partir de {article} {plural} {heads}"
     if alt.kind == "WO":
         return "producto obtenido en su totalidad (WO)"
     if alt.kind == "CC":
@@ -513,7 +519,7 @@ class OriginGenerator(ProblemGenerator):
         shares = [rng.uniform(0.04, 0.28) for _ in chosen]
         scale = min(1.0, 0.9 / sum(shares))
         materials = []
-        for (name, code), share in zip(chosen, shares):
+        for (name, code), share in zip(chosen, shares, strict=True):
             origin = rng.choices(ORIGINS, weights=ORIGIN_WEIGHTS)[0]
             declared = origin in ORIGINATING_ORIGINS and rng.random() < P_DECLARED
             materials.append(
@@ -537,7 +543,9 @@ class OriginGenerator(ProblemGenerator):
         if draw < P_EXACT_THRESHOLD:
             self._force_exact(rule, materials, exw, fob, Fraction(0))
         elif draw < P_EXACT_THRESHOLD + P_OVER_THRESHOLD and tolerance_pct:
-            extra = Fraction(tolerance_pct, 100) * exw * Fraction(str(round(rng.uniform(0.2, 0.8), 2)))
+            extra = (
+                Fraction(tolerance_pct, 100) * exw * Fraction(str(round(rng.uniform(0.2, 0.8), 2)))
+            )
             self._force_exact(rule, materials, exw, fob, extra)
 
         if rng.random() < P_INSUFFICIENT_ONLY:
@@ -643,7 +651,9 @@ class OriginGenerator(ProblemGenerator):
         def declaration(m: dict[str, Any]) -> str:
             if m["origin"] not in ORIGINATING_ORIGINS:
                 return ""
-            return "con declaración de proveedor" if m["declared"] else "sin declaración de proveedor"
+            return (
+                "con declaración de proveedor" if m["declared"] else "sin declaración de proveedor"
+            )
 
         product_block = (
             f"Una pyme española exporta a {partner} el producto «{params['product_name']}» "
@@ -670,15 +680,18 @@ class OriginGenerator(ProblemGenerator):
         insufficient = ", ".join(OPERATION_LABEL[o] for o in INSUFFICIENT_OPERATIONS)
         general_block = (
             "Reglas generales:\n"
-            f"- Son originarios los materiales de la UE o de {partner} con declaración de proveedor. "
+            f"- Son originarios los materiales de la UE o de {partner} "
+            "con declaración de proveedor. "
             "Los materiales de terceros países, los de origen desconocido y los de la UE o "
             "del país socio sin declaración de proveedor se consideran no originarios.\n"
             f"- {tolerance_text}\n"
             f"- Las operaciones insuficientes ({insufficient}) por sí solas no confieren origen."
         )
-        operations_block = "Operaciones realizadas: " + ", ".join(
-            OPERATION_LABEL[o] for o in params["operations"]
-        ) + "."
+        operations_block = (
+            "Operaciones realizadas: "
+            + ", ".join(OPERATION_LABEL[o] for o in params["operations"])
+            + "."
+        )
         codes = join_codes([alt.kind for alt in rule.alternatives])
         ask = (
             "Decide si el producto es originario. Da la respuesta final como JSON con las claves "
@@ -695,13 +708,24 @@ class OriginGenerator(ProblemGenerator):
             for m in materials:
                 extra = declaration(m)
                 lines.append(
-                    f"- {m['name']} (SA {fmt_code(m['code'])}): origen {origin_label[m['origin']]}, "
+                    f"- {m['name']} (SA {fmt_code(m['code'])}): "
+                    f"origen {origin_label[m['origin']]}, "
                     f"{fmt_eur(m['value'])} €" + (f", {extra}." if extra else ".")
                 )
             materials_block = "Lista de materiales utilizados:\n" + "\n".join(lines)
-            sections = [product_block, rule_block, general_block, materials_block, operations_block, ask]
+            sections = [
+                product_block,
+                rule_block,
+                general_block,
+                materials_block,
+                operations_block,
+                ask,
+            ]
         elif template_id == 1:
-            rows = ["| Material | SA | Origen | Valor (€) | Declaración de proveedor |", "|---|---|---|---|---|"]
+            rows = [
+                "| Material | SA | Origen | Valor (€) | Declaración de proveedor |",
+                "|---|---|---|---|---|",
+            ]
             for m in materials:
                 extra = declaration(m)
                 decl = ("sí" if m["declared"] else "no") if extra else "—"
@@ -710,7 +734,14 @@ class OriginGenerator(ProblemGenerator):
                     f"{fmt_eur(m['value'])} | {decl} |"
                 )
             materials_block = "Materiales utilizados:\n" + "\n".join(rows)
-            sections = [rule_block, product_block, materials_block, operations_block, general_block, ask]
+            sections = [
+                rule_block,
+                product_block,
+                materials_block,
+                operations_block,
+                general_block,
+                ask,
+            ]
         else:
             parts = []
             for m in materials:
@@ -720,7 +751,14 @@ class OriginGenerator(ProblemGenerator):
                     f"{fmt_eur(m['value'])} €" + (f", {extra})" if extra else ")")
                 )
             materials_block = "Materiales: " + "; ".join(parts) + "."
-            sections = [product_block, materials_block, operations_block, rule_block, general_block, ask]
+            sections = [
+                product_block,
+                materials_block,
+                operations_block,
+                rule_block,
+                general_block,
+                ask,
+            ]
         return "\n\n".join(sections), template_id
 
 

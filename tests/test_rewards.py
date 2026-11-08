@@ -90,7 +90,10 @@ def test_origin_accuracy_reward_uses_the_origin_verifier():
         "<think>sin respuesta</think>",
     ]
     assert origin_accuracy_reward([None] * 4, completions, answer=[EXPECTED] * 4) == [
-        1.0, 1.0, 0.0, 0.0,
+        1.0,
+        1.0,
+        0.0,
+        0.0,
     ]
     assert accuracy_reward([None], completions[2:3], answer=[EXPECTED]) == [1.0]
 

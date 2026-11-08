@@ -108,8 +108,11 @@ def load_model(base_model: str, adapter: str | None):
     model.eval()
     if torch.cuda.is_available():
         free, total = torch.cuda.mem_get_info()
-        print(f"model on {model.device} ({torch.cuda.get_device_name(0)}, "
-              f"{free / 2**30:.1f} of {total / 2**30:.1f} GB free)", flush=True)
+        print(
+            f"model on {model.device} ({torch.cuda.get_device_name(0)}, "
+            f"{free / 2**30:.1f} of {total / 2**30:.1f} GB free)",
+            flush=True,
+        )
     else:
         print("WARNING: no GPU visible, generating on CPU (hours, not minutes)", flush=True)
     return model, tokenizer
@@ -167,10 +170,12 @@ def evaluate_model(
                 **inputs, **gen_kwargs, stopping_criteria=StoppingCriteriaList([Progress()])
             )
         new_tokens = output[:, inputs["input_ids"].shape[1] :]
-        print(f"    generated {new_tokens.shape[1]} tokens in {time.time() - t0:.0f} s; verifying",
-              flush=True)
+        print(
+            f"    generated {new_tokens.shape[1]} tokens in {time.time() - t0:.0f} s; verifying",
+            flush=True,
+        )
 
-        for ex, seq in zip(batch, new_tokens):
+        for ex, seq in zip(batch, new_tokens, strict=True):
             n_tokens = int((seq != tokenizer.pad_token_id).sum())
             raw = _clean(tokenizer.decode(seq, skip_special_tokens=False), tokenizer)
             result = verifier.verify(raw, ex["answer"])
@@ -306,9 +311,9 @@ def plot_history(path: str | Path) -> None:
         print("no hay curvas que dibujar en", path)
         return
     fig, axes = plt.subplots(len(keys), 1, figsize=(7, 2.4 * len(keys)), sharex=True, squeeze=False)
-    for ax, key in zip(axes[:, 0], keys):
+    for ax, key in zip(axes[:, 0], keys, strict=True):
         points = [(h["step"], h[key]) for h in history if key in h and "step" in h]
-        ax.plot(*zip(*points), marker="o", markersize=3)
+        ax.plot(*zip(*points, strict=True), marker="o", markersize=3)
         ax.set_ylabel(key)
         ax.grid(alpha=0.3)
     axes[-1, 0].set_xlabel("step")
@@ -334,7 +339,9 @@ def main() -> None:
     parser.add_argument("--data", default="rlm/data/test.jsonl", help="'gsm8k' or a JSONL")
     parser.add_argument("--model", default="Qwen/Qwen3-1.7B")
     parser.add_argument(
-        "--adapters", nargs="+", default=["base=none"],
+        "--adapters",
+        nargs="+",
+        default=["base=none"],
         help="name=path pairs; use 'none' for the bare base model",
     )
     parser.add_argument("--n-examples", type=int, default=None, help="default: all")
@@ -405,7 +412,9 @@ def main() -> None:
             if g["n"] >= 5:
                 print(f"    {label:<40} {g['pass@1']:.3f}  (n={g['n']})")
     print(f"details -> {out}")
-    plot_pass1(results, out.with_name(out.name.replace("phase1_eval", "phase1_pass1")).with_suffix(".png"))
+    plot_pass1(
+        results, out.with_name(out.name.replace("phase1_eval", "phase1_pass1")).with_suffix(".png")
+    )
 
 
 if __name__ == "__main__":

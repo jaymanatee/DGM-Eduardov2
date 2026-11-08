@@ -166,7 +166,10 @@ class OriginVerifier(Verifier):
         if criterion.strip().upper() not in valid:
             return False, f"criterio {criterion!r} no válido (válidos: {valid})"
         if abs(pct - truth["pct_no_originario"]) > self.pct_tolerance + 1e-9:
-            return False, f"porcentaje fuera de ±{self.pct_tolerance}: {pct} vs {truth['pct_no_originario']}"
+            return (
+                False,
+                f"porcentaje fuera de ±{self.pct_tolerance}: {pct} vs {truth['pct_no_originario']}",
+            )
         return True, ""
 
     def is_correct(self, predicted: str | None, expected: str) -> bool:

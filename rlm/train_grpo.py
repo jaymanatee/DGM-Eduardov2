@@ -163,8 +163,10 @@ def train(args: argparse.Namespace) -> None:
     trainer.train(resume_from_checkpoint=resolve_resume(args.resume_from_checkpoint, args.output))
     if trainer.state.global_step < args.steps:
         # Stopped by --max-hours: the checkpoint is the result, not a final adapter.
-        print(f"stopped at step {trainer.state.global_step} of {args.steps}; run the same "
-              "command again with --resume-from-checkpoint last to continue")
+        print(
+            f"stopped at step {trainer.state.global_step} of {args.steps}; run the same "
+            "command again with --resume-from-checkpoint last to continue"
+        )
         return
     trainer.save_model(args.output)
 
@@ -183,7 +185,8 @@ def main() -> None:
     )
     parser.add_argument("--model", default="Qwen/Qwen3-1.7B")
     parser.add_argument(
-        "--init-adapter", default="rlm/weights/sft_lora",
+        "--init-adapter",
+        default="rlm/weights/sft_lora",
         help="SFT adapter to start from; 'none' for the base model (R1-Zero)",
     )
     parser.add_argument("--output", default="rlm/weights/final_rlm_lora")
@@ -191,7 +194,9 @@ def main() -> None:
     parser.add_argument("--num-generations", type=int, default=8, help="answers per problem")
     parser.add_argument("--prompts-per-step", type=int, default=1, help="problems per step")
     parser.add_argument(
-        "--batch-size", type=int, default=1,
+        "--batch-size",
+        type=int,
+        default=1,
         help="answers per forward/backward pass; must divide prompts-per-step x num-generations",
     )
     parser.add_argument("--max-completion-length", type=int, default=3072)
@@ -199,7 +204,10 @@ def main() -> None:
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--beta", type=float, default=0.0, help="KL coefficient (0 disables it)")
     parser.add_argument(
-        "--reward-weights", type=float, nargs=3, default=[0.2, 1.0, 0.3],
+        "--reward-weights",
+        type=float,
+        nargs=3,
+        default=[0.2, 1.0, 0.3],
         metavar=("FORMAT", "ACCURACY", "DOMAIN"),
         help="weights of the three domain rewards (ignored with gsm8k)",
     )
@@ -213,7 +221,9 @@ def main() -> None:
         "one in --output (starts from scratch if there is none)",
     )
     parser.add_argument(
-        "--max-hours", type=float, default=None,
+        "--max-hours",
+        type=float,
+        default=None,
         help="save a checkpoint and stop after this many hours of training (8 h sessions)",
     )
     parser.add_argument("--seed", type=int, default=0)

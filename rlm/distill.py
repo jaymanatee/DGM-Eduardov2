@@ -44,7 +44,7 @@ def canonicalize(text: str) -> tuple[str | None, str]:
     """
     match = THINK_RE.search(text)
     if match is not None:
-        reasoning, rest = match.group(1), text[match.end():]
+        reasoning, rest = match.group(1), text[match.end() :]
     elif "</think>" in text:
         reasoning, rest = text.split("</think>", 1)
         reasoning = reasoning.replace("<think>", "")
@@ -140,9 +140,7 @@ def generate_traces(
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    model = AutoModelForCausalLM.from_pretrained(
-        teacher, dtype=torch.bfloat16, device_map="auto"
-    )
+    model = AutoModelForCausalLM.from_pretrained(teacher, dtype=torch.bfloat16, device_map="auto")
     model.eval()
 
     for start in range(start_idx, len(problems), batch_size):
@@ -225,7 +223,9 @@ def main() -> None:
     parser.add_argument("--max-new-tokens", type=int, default=2048)
     parser.add_argument("--batch-size", type=int, default=2, help="problems per generate call")
     parser.add_argument(
-        "--verifier", choices=sorted(VERIFIERS), default="origin",
+        "--verifier",
+        choices=sorted(VERIFIERS),
+        default="origin",
         help="origin for your domain, numeric for the GSM8K control set",
     )
     parser.add_argument("--output", default="rlm/data/sft_traces.jsonl")
