@@ -47,7 +47,7 @@ Referencias fijas con el enunciado E6 (se actualizan solo si cambia el generador
 | `sft_problemas.jsonl` | `--n 500 --split train --seed 0` | `3327deb2e5d4a831c458cc7731bddeafc61b70f80b9c6821e9427f1e766ca17d` |
 
 Modelos y evaluaciones. Los pesos no se suben al repositorio: se regeneran con el comando de su
-entrada.
+entrada. Todos los comandos, en orden, están en [`docs/fase1_reproducir.md`](docs/fase1_reproducir.md).
 
 | Ruta | Qué es | Entrada |
 |---|---|---|
@@ -58,7 +58,7 @@ entrada.
 | `rlm/weights/grpo_pps3/` | Adaptador LoRA del GRPO 2 (270 pasos de 3 problemas sobre `sft_lora`), con `log_history.json` y `completions/`. Es el modelo final de la fase 1 | 2026-11-05 · GRPO 2 |
 | `reports/grpo2_test.json`, `reports/grpo2_ood.json` | Respuestas completas y veredictos del GRPO 2 en `test` y `test_ood` | 2026-11-05 · Evaluación del GRPO 2 |
 | `reports/phase1_analysis_grpo2_test.md`, `reports/phase1_analysis_grpo2_test_ood.md` | Análisis de base, SFT repetido, GRPO 1 y GRPO 2 (`rlm/analyze_eval.py --compare sft grpo2`) | 2026-11-05 · Evaluación del GRPO 2 |
-| `reports/phase1_grpo_curves.png` | Curvas de recompensa, formato, cortadas y longitud de los dos GRPO | 2026-11-05 · GRPO 2 |
+| `reports/phase1_grpo_curves.png` | Curvas de recompensa, formato, cortadas y longitud de los dos GRPO (`rlm/plot_grpo_curves.py`) | 2026-11-05 · GRPO 2 |
 | `reports/phase1_eval_test.json`, `reports/phase1_eval_test_ood.json` | Respuestas completas y veredictos del base, el SFT y el GRPO en `test` y `test_ood` | 2026-10-26 · Evaluación del base y del SFT; 2026-11-03 · Evaluación del GRPO |
 | `reports/phase1_analysis_test.md`, `reports/phase1_analysis_test_ood.md` | Análisis de esas evaluaciones (`rlm/analyze_eval.py`) | 2026-10-26 · Evaluación del base y del SFT; 2026-11-03 · Evaluación del GRPO |
 | `reports/sft_rerun_test.json`, `reports/sft_rerun_ood.json` | El mismo SFT evaluado de nuevo, en las condiciones del GRPO | 2026-11-03 · Evaluación del GRPO |

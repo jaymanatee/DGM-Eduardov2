@@ -5,6 +5,12 @@ Run after ``rlm/evaluate.py``::
     uv run python -m rlm.analyze_eval reports/phase1_eval_test.json
     uv run python -m rlm.analyze_eval reports/phase1_eval_test_ood.json --no-teacher
 
+Several files are merged in order, and a model that appears again replaces the earlier one
+(this is how the GRPO 2 analysis puts the re-run SFT next to the base and the GRPO 1)::
+
+    uv run python -m rlm.analyze_eval reports/phase1_eval_test.json reports/sft_rerun_test.json \\
+        reports/grpo2_test.json --compare sft grpo2 --out reports/phase1_analysis_grpo2_test.md
+
 No GPU needed: it only reads the per-example verdicts that ``evaluate.py`` saved. It prints
 markdown tables and writes them to ``reports/phase1_analysis_<data>.md``, ready to quote in
 EXPERIMENTS.md and the report:
@@ -464,7 +470,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("eval_json", help="file written by rlm/evaluate.py")
+    parser.add_argument("eval_json", nargs="+", help="one or more files written by rlm/evaluate.py")
     parser.add_argument("--teacher", default="rlm/data/sft_traces.jsonl")
     parser.add_argument("--no-teacher", action="store_true", help="skip the teacher column")
     parser.add_argument(
@@ -480,18 +486,32 @@ def main() -> None:
     parser.add_argument("--out", default=None, help="default: reports/phase1_analysis_<data>.md")
     args = parser.parse_args()
 
-    path = Path(args.eval_json)
-    results = json.loads(path.read_text(encoding="utf-8"))
+    paths = [Path(p) for p in args.eval_json]
+    results: dict = {}
+    source: dict[str, Path] = {}
+    for path in paths:
+        for name, result in json.loads(path.read_text(encoding="utf-8")).items():
+            results[name] = result
+            source[name] = path
     if not results:
         raise SystemExit("el fichero no tiene ningún modelo evaluado")
     names = list(results)
+    if len(paths) == 1:
+        title = f"`{paths[0].name}`"
+    else:
+        parts = [
+            f"`{path}` ({', '.join(n for n in names if source[n] == path)})"
+            for path in paths
+            if path in source.values()
+        ]
+        title = ", ".join(parts[:-1]) + " y " + parts[-1] if len(parts) > 1 else parts[0]
 
     teacher = None
     if not args.no_teacher and Path(args.teacher).exists():
         teacher = teacher_rates(Path(args.teacher))
 
     sections = [
-        f"# Análisis de `{path.name}`\n\nModelos: {', '.join(names)}.",
+        f"# Análisis de {title}\n\nModelos: {', '.join(names)}.",
         section_pass1(results),
     ]
     pair = args.compare or (names[:2] if len(names) >= 2 else None)
@@ -507,7 +527,7 @@ def main() -> None:
     text = "\n\n".join(sections) + "\n"
     print(text)
 
-    stem = path.stem.replace("phase1_eval_", "")
+    stem = paths[0].stem.replace("phase1_eval_", "")
     out = Path(args.out or f"reports/phase1_analysis_{stem}.md")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
