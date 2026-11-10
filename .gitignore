@@ -12,6 +12,8 @@ dist/
 # Pesos, datos, índices y cachés de modelos
 rlm/weights/*
 !rlm/weights/.gitkeep
+tool_use/weights/*
+!tool_use/weights/.gitkeep
 rag/corpus/*
 !rag/corpus/.gitkeep
 rag/index/

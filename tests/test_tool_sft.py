@@ -246,3 +246,29 @@ def test_no_benchmark_question_or_value_in_any_kind():
     assert not users & set(queries)
     concept_questions = {q for c in no_tools.CONCEPTS.values() for q in c[0] + c[1]}
     assert not concept_questions & set(queries)
+
+
+def test_render_gives_the_loops_prompts_in_both_variants():
+    pytest.importorskip("transformers")
+    from transformers import AutoTokenizer
+
+    from tool_use.sft.render import render_trajectory
+
+    try:
+        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-1.7B", local_files_only=True)
+    except OSError:
+        pytest.skip("the Qwen3 tokenizer is not in the local cache")
+    t = next(t for t in SMALL["train"] if t.kind == "subdivision")
+    think = render_trajectory(t, tokenizer, thinking=True)
+    nothink = render_trajectory(t, tokenizer, thinking=False)
+    turns = sum(m["role"] == "assistant" for m in t.messages)
+    assert len(think) == len(nothink) == turns >= 2
+    assert f"Today is {t.today}." in think[0]["prompt"]  # the trajectory's day, not today's
+    # With reasoning: every turn starts thinking, and the history shows it as trained.
+    assert all(e["completion"].startswith("<think>\n") for e in think)
+    for earlier, later in zip(think, think[1:], strict=False):
+        assert later["prompt"].startswith(earlier["prompt"] + earlier["completion"])
+    # Without: the template opens an empty <think> and the turn goes straight to the call.
+    assert all(e["prompt"].endswith("<think>\n\n</think>\n\n") for e in nothink)
+    assert all(e["completion"].startswith("<tool_call>") for e in nothink[:-1])
+    assert all(e["completion"].endswith("<|im_end|>") for e in think + nothink)

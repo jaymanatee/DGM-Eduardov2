@@ -33,7 +33,7 @@ from datetime import date
 from typing import Any
 from unittest import mock
 
-from tool_use import tools
+from tool_use import executor, tools
 from tool_use.executor import ToolLoop
 from tool_use.registry import ToolCallRecord
 from tool_use.sft.catalog import PRODUCTS, Material, Product
@@ -288,6 +288,7 @@ class Offline:
             mock.patch.object(tools, "_http_get", self._http_get),
             mock.patch.object(tools, "_EVALUATIONS", {}),  # each conversation its own
             mock.patch.object(tools, "date", Today),
+            mock.patch.object(executor, "date", Today),  # "Today is ..." in the system prompt
             mock.patch.object(tools.time, "sleep", lambda s: None),
             mock.patch.object(tools.secrets, "token_hex", lambda n: self.rng.randbytes(n).hex()),
             mock.patch.dict(os.environ, {"ARCA_STATEMENTS_DIR": "outputs/origin_statements"}),
