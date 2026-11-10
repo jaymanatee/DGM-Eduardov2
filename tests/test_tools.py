@@ -303,7 +303,6 @@ def battery(**overrides):
         "agreement": "UE-JP",
         "product_hs_code": "850760",
         "exw_price_eur": 250,
-        "criteria": [{"kind": "CTH"}, {"kind": "MAXNOM", "threshold_pct": 50}],
         "materials": [
             {"name": "celdas", "hs_code": "8507.60", "origin": "TERCERO", "value_eur": 95},
             {"name": "carcasa", "hs_code": "392690", "origin": "UE", "value_eur": 20,
@@ -313,56 +312,66 @@ def battery(**overrides):
     return arguments | overrides
 
 
-def test_evaluate_origin_uses_the_agreement_tolerance_and_explains(rules):
+def test_evaluate_origin_applies_the_official_rule_and_explains(rules):
     result = evaluate_origin(**battery())
-    # Cells are in the same heading: CTH fails (95 > 10 % of 250) but MaxNOM 38 % <= 50 % passes.
+    # Japan's rule: CTH or MaxNOM 50 % or RVC 55 % FOB. Cells are in the same heading, so CTH
+    # fails (95 > 10 % of 250), MaxNOM 38 % <= 50 % passes; without a FOB price RVC is skipped.
     assert result["originating"] and result["criterion"] == "MAXNOM"
+    assert result["rule_applied"] == "CTH or MAXNOM 50 % EXW"
+    assert result["not_checked"] == ["RVC 55 % FOB: needs fob_price_eur"]
     assert result["pct_non_originating"] == 38.0 and result["tolerance_pct"] == 10
     assert "material_misma_partida" in result["warnings"]
     assert re.fullmatch(r"EV-[0-9A-F]{6}", result["evaluation_id"])  # random: not guessable
     assert evaluate_origin(**battery())["evaluation_id"] != result["evaluation_id"]
-    assert len(result["trace"]) == 4
-
-
-def test_evaluate_origin_insufficient_operations_and_bad_criteria(rules):
+    with_fob = evaluate_origin(**battery(fob_price_eur=265))
+    assert "RVC" in with_fob["criteria_met"] and with_fob["not_checked"] == []
     assert not evaluate_origin(**battery(operations=["embalaje"]))["originating"]
-    registry = default_registry()
-    no_threshold = registry.call("evaluate_origin", battery(criteria=[{"kind": "MAXNOM"}]))
-    assert not no_threshold.ok and "threshold_pct" in no_threshold.error
-    fob = registry.call(
-        "evaluate_origin", battery(criteria=[{"kind": "RVC", "threshold_pct": 55, "basis": "FOB"}])
-    )
-    assert not fob.ok and "fob_price_eur" in fob.error
+    assert len(rules.calls) == 1  # one rule lookup, cached for the next evaluations
 
 
-def test_evaluate_origin_refuses_criteria_that_are_not_the_rule(rules):
+def test_evaluate_origin_asks_for_the_subdivision_when_there_are_several(rules):
     registry = default_registry()
-    # The v2 failure: invented RVC 30 % for the tables. Here: same idea on the battery.
-    invented = registry.call(
-        "evaluate_origin", battery(criteria=[{"kind": "RVC", "threshold_pct": 30}])
-    )
-    assert not invented.ok and "not the rule of origin of 850760 under UE-JP" in invented.error
-    assert '"threshold_pct": 55, "basis": "FOB"' in invented.error  # the right ones, to copy
-    # MaxNOM 50 is Japan's; Korea's is 45.
-    korea = registry.call("evaluate_origin", battery(agreement="UE-KR"))
-    assert not korea.ok and "MAXNOM" in korea.error
-    # A subset of one rule set is fine; mixing rule sets of the TCA (30 % packs, 50 % others)
-    # is not: it would be a rule that does not exist.
-    assert evaluate_origin(**battery(agreement="TCA", criteria=[{"kind": "CTH"}]))
-    mixed = [{"kind": "CTH"}, {"kind": "MAXNOM", "threshold_pct": 30}]
-    assert not registry.call("evaluate_origin", battery(agreement="TCA", criteria=mixed)).ok
-    # The tolerance is the agreement's: the model cannot set it any more.
+    # The TCA has three rule sets for 850760: vehicle battery packs, cells, and others.
+    ambiguous = registry.call("evaluate_origin", battery(agreement="TCA"))
+    assert not ambiguous.ok and "3 subdivisions" in ambiguous.error
+    assert "1) Accumulators" in ambiguous.error and "3) others" in ambiguous.error
+    others = evaluate_origin(**battery(agreement="TCA", subdivision=3))
+    assert others["rule_applied"] == "CTH or MAXNOM 50 % EXW" and others["originating"]
+    packs = evaluate_origin(**battery(agreement="TCA", subdivision=1))
+    assert packs["rule_applied"] == "MAXNOM 30 % EXW" and not packs["originating"]
+    assert packs["not_checked"]  # the CTH-except-cathodes alternative, left for a human
+    wrong = registry.call("evaluate_origin", battery(agreement="TCA", subdivision=4))
+    assert not wrong.ok and "no subdivision 4" in wrong.error
+    # What the model can no longer set: criteria and tolerance come from the agreement.
     params = registry.tools["evaluate_origin"].definition["function"]["parameters"]
-    assert "tolerance_pct" not in params["properties"]
+    assert {"criteria", "tolerance_pct"}.isdisjoint(params["properties"])
+    numbered = get_origin_rule(hs_code="850760", agreement="TCA")["rule_sets"]
+    assert [rs["number"] for rs in numbered] == [1, 2, 3]
 
 
 def test_evaluate_origin_with_a_rule_it_cannot_read(rules, monkeypatch):
     unreadable = {
-        "rule_sets": [{"criteria": [], "not_machine_readable": ["Knitting and making-up"]}]
+        "rule_sets": [{"subdivision": None, "criteria": [], "not_machine_readable": ["Knitting"]}]
     }
     monkeypatch.setattr(tools, "_rule_of_origin", lambda hs_code, agreement: unreadable)
     record = default_registry().call("evaluate_origin", battery(agreement="CETA"))
     assert not record.ok and "checked by hand" in record.error and "Knitting" in record.error
+
+
+def test_evaluate_origin_needs_fob_when_the_only_rule_is_on_fob(rules, monkeypatch):
+    only_fob = {
+        "rule_sets": [
+            {
+                "subdivision": None,
+                "criteria": [{"kind": "RVC", "threshold_pct": 55, "basis": "FOB"}],
+                "not_machine_readable": [],
+            }
+        ]
+    }
+    monkeypatch.setattr(tools, "_rule_of_origin", lambda hs_code, agreement: only_fob)
+    record = default_registry().call("evaluate_origin", battery())
+    assert not record.ok and "give fob_price_eur" in record.error
+    assert evaluate_origin(**battery(fob_price_eur=265))["originating"]
 
 
 # ----------------------------------------------------------------- issue_origin_statement
@@ -407,8 +416,7 @@ def test_issue_statement_writes_the_file_once(out_dir, rules):
 
 def test_issue_statement_refusals(out_dir, rules):
     not_originating = evaluate_origin(**battery(operations=["etiquetado"]))["evaluation_id"]
-    korea = [{"kind": "CTH"}, {"kind": "MAXNOM", "threshold_pct": 45}]
-    originating = evaluate_origin(**battery(agreement="UE-KR", criteria=korea))["evaluation_id"]
+    originating = evaluate_origin(**battery(agreement="UE-KR"))["evaluation_id"]  # MaxNOM 45
     common = {"invoice_number": "F-1", "exporter_name": "A", "place": "B"}
     with pytest.raises(ValueError, match="NOT originating"):
         issue_origin_statement(evaluation_id=not_originating, consignment_value_eur=100, **common)
@@ -416,7 +424,24 @@ def test_issue_statement_refusals(out_dir, rules):
         issue_origin_statement(evaluation_id=originating, consignment_value_eur=6500, **common)
     with pytest.raises(ValueError, match="call evaluate_origin first"):
         issue_origin_statement(evaluation_id="EV-9999", consignment_value_eur=100, **common)
+    japan = evaluate_origin(**battery())["evaluation_id"]
+    with pytest.raises(ValueError, match="is not a REX number"):  # what the model invented
+        issue_origin_statement(
+            evaluation_id=japan, consignment_value_eur=100, exporter_reference="EX-123456", **common
+        )
     assert not list(out_dir.iterdir())
+    # A real REX number, written loosely, is accepted and normalised; Korea's authorisation
+    # number has no fixed format.
+    issued = issue_origin_statement(
+        evaluation_id=japan, consignment_value_eur=7000, exporter_reference="es rex b46123456",
+        **common,
+    )  # fmt: skip
+    assert "(Exporter Reference No ESREXB46123456)" in issued["text"]
+    korean = issue_origin_statement(
+        evaluation_id=originating, consignment_value_eur=7000, exporter_reference="ES/0042/AE",
+        invoice_number="F-2", exporter_name="A", place="B",
+    )  # fmt: skip
+    assert "customs authorisation No ES/0042/AE" in korean["text"]
 
 
 # ----------------------------------------------------------------------------- registry

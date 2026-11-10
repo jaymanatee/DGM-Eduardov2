@@ -79,6 +79,21 @@ def test_parallel_calls_in_any_order():
     assert not score_case(case, made[:1])["calls_ok"]
 
 
+def test_optional_calls_are_checked_only_if_made():
+    case = {
+        "expected_tool": ["get_origin_rule", "evaluate_origin"],
+        "expected_calls": [{"tool": "evaluate_origin", "arguments": {"agreement": "TCA"}}],
+        "optional_calls": [{"tool": "get_origin_rule", "arguments": {"hs_code": "841459"}}],
+    }
+    direct = [call("evaluate_origin", agreement="TCA")]
+    assert score_case(case, direct)["arguments_ok"] and score_case(case, direct)["calls_ok"]
+    looked_up = [call("get_origin_rule", hs_code="841459"), *direct]
+    assert score_case(case, looked_up)["arguments_ok"]
+    wrong_code = [call("get_origin_rule", hs_code="850760"), *direct]
+    assert not score_case(case, wrong_code)["arguments_ok"]
+    assert score_case(case, wrong_code)["calls_ok"]  # the evaluation itself was right
+
+
 def test_forbidden_tools_and_invented_arguments():
     case = {
         "expected_tool": "evaluate_origin",
@@ -126,8 +141,8 @@ def test_previous_month():
 BENCH = load_bench("tool_use/bench/cases.jsonl", today=date(2026, 11, 9))
 
 
-def test_bench_has_thirty_cases_with_known_tools():
-    assert len(BENCH) == 30 and len({c["id"] for c in BENCH}) == 30
+def test_bench_has_31_cases_with_known_tools():
+    assert len(BENCH) == 31 and len({c["id"] for c in BENCH}) == 31
     assert sum(not c.get("needs_tool", True) for c in BENCH) >= 6
     for case in BENCH:
         expected = case.get("expected_tool", [])

@@ -19,6 +19,8 @@ Optional fields, for what the first call alone cannot show (``tool_use/bench/cas
 * ``expected_tool`` may be a list: any of them may come first (parallel calls have no order).
 * ``expected_calls``: ``[{"tool": ..., "arguments": {...}}]``, every one must appear somewhere
   in the run, in any order. This is how chains and parallel calls are scored.
+* ``optional_calls``: same format, calls the model may make or skip (looking the rule up before
+  evaluate_origin, which finds it by itself); if one comes first, its arguments are checked.
 * ``forbidden_tools``: tools that must not be called (e.g. issuing a statement for a product
   that is not originating).
 * ``forbidden_arguments``: ``{"tool": ["argument"]}``, arguments that must stay empty because
@@ -142,7 +144,8 @@ def score_case(
             expected = {"tool": first["name"], "arguments": case["expected_arguments"]}
             scores["arguments_ok"] = _call_matches(expected, first, registry)
         else:  # the first call's expectation is the matching entry of expected_calls
-            candidates = [e for e in case.get("expected_calls", []) if e["tool"] == first["name"]]
+            expectations = case.get("expected_calls", []) + case.get("optional_calls", [])
+            candidates = [e for e in expectations if e["tool"] == first["name"]]
             scores["arguments_ok"] = any(_call_matches(e, first, registry) for e in candidates)
 
     if "expected_calls" in case or "forbidden_tools" in case or "forbidden_arguments" in case:

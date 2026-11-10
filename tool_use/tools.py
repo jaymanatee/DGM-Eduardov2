@@ -25,7 +25,6 @@ import copy
 import csv
 import functools
 import io
-import json
 import os
 import re
 import secrets
@@ -69,6 +68,9 @@ HTTP_RETRY_PAUSE_S = 1.0
 # Above this value an EU exporter needs its REX number (or, for Korea, the approved-exporter
 # authorisation) on the statement: Article 68 of the UCC Implementing Act.
 EXPORTER_REFERENCE_THRESHOLD_EUR = 6000
+# REX numbers start with the ISO code of the issuing country and 'REX' (e.g. ESREXB46123456).
+# The model invented 'EX-123456' in several benchmark runs; this catches that kind.
+REX_NUMBER = re.compile(r"[A-Z]{2}REX[A-Z0-9]{2,30}")
 
 # Currencies with an ECB reference rate. Checked before calling: the ECB API does not answer
 # an unknown code with an error, it hangs until the timeout.
@@ -418,16 +420,18 @@ def _http_get(url: str, params: dict[str, Any] | None = None) -> requests.Respon
 def get_origin_rule(hs_code: HsCode, agreement: Agreement) -> dict:
     """Look up the product-specific rule of origin of an EU trade agreement for a product.
 
-    Returns one or more rule sets. When there are several, each one has a 'subdivision'
-    describing which products it covers: pick the one that matches the product. Each rule
-    set has 'criteria', ready to pass to evaluate_origin, and the general tolerance.
+    Returns one or more numbered rule sets and the general tolerance. When there are several,
+    each one has a 'subdivision' describing which products it covers. evaluate_origin applies
+    the rule by itself: only tell it the 'number' of the rule set that matches the product.
 
     Args:
         hs_code: HS code of the final product, 6 digits, e.g. '850760' (longer codes are cut
             to 6 digits).
         agreement: TCA (United Kingdom), UE-JP (Japan), UE-KR (South Korea) or CETA (Canada).
     """
-    return copy.deepcopy(_rule_of_origin(hs_code, agreement))
+    rule = copy.deepcopy(_rule_of_origin(hs_code, agreement))
+    rule["rule_sets"] = [{"number": i, **rs} for i, rs in enumerate(rule["rule_sets"], 1)]
+    return rule
 
 
 @functools.lru_cache(maxsize=512)
@@ -552,43 +556,6 @@ def _check_shape(criteria: list[dict[str, Any]], fob_price_eur: float | None) ->
         raise ValueError("a criterion is on a FOB basis: give fob_price_eur")
 
 
-def _criterion_key(c: dict[str, Any]) -> tuple:
-    """What makes two criteria the same rule: kind, and threshold and basis for value rules."""
-    value = c["kind"] in VALUE_CRITERIA
-    return (
-        c["kind"],
-        c.get("threshold_pct") if value else None,
-        c.get("basis", "EXW") if value else None,
-        tuple(sorted(re.sub(r"\D", "", h)[:4] for h in c.get("excluded_headings") or [])),
-    )
-
-
-def check_criteria(agreement: str, hs_code: str, criteria: list[dict[str, Any]]) -> None:
-    """Refuse criteria that are not in the official rule (any subset of one rule set is fine).
-
-    In the v2 benchmark the model passed criteria it made up ('RVC 30 % EXW') to
-    evaluate_origin, the engine found the goods originating, and a statement on origin went
-    out for tables that were not. A subset is accepted: fewer alternatives can only make a
-    product fail, never pass, where it should not.
-    """
-    rule = _rule_of_origin(hs_code, agreement)
-    official = [rs["criteria"] for rs in rule["rule_sets"] if rs["criteria"]]
-    if not official:
-        texts = "; ".join(t for rs in rule["rule_sets"] for t in rs["not_machine_readable"])
-        raise ValueError(
-            f"the rule of origin of {hs_code} under {agreement} has no criteria this tool can "
-            f"check ({texts[:300]}). It has to be checked by hand; tell the user."
-        )
-    given = {_criterion_key(c) for c in criteria}
-    if any(given <= {_criterion_key(c) for c in rs} for rs in official):
-        return
-    options = " or ".join(json.dumps(rs) for rs in official)
-    raise ValueError(
-        f"these criteria are not the rule of origin of {hs_code} under {agreement}. The rule "
-        f"is {options}. Call evaluate_origin again with one of these lists, copied as is."
-    )
-
-
 def assess_origin(
     agreement: str,
     product_hs_code: str,
@@ -669,41 +636,82 @@ def assess_origin(
     }
 
 
+def _describe(criterion: dict[str, Any]) -> str:
+    if criterion["kind"] not in VALUE_CRITERIA:
+        return criterion["kind"]
+    return f"{criterion['kind']} {criterion['threshold_pct']} % {criterion.get('basis', 'EXW')}"
+
+
+def official_rule_set(agreement: str, hs_code: str, subdivision: int | None) -> dict[str, Any]:
+    """The rule set of the official rule that evaluate_origin applies, or a ValueError that
+    tells the model what to do (pick a subdivision, or check by hand)."""
+    rule_sets = _rule_of_origin(hs_code, agreement)["rule_sets"]
+    listing = "; ".join(
+        f"{i}) {(rs['subdivision'] or 'all products')[:150]}" for i, rs in enumerate(rule_sets, 1)
+    )
+    if subdivision is None and len(rule_sets) > 1:
+        raise ValueError(
+            f"the rule of origin of {hs_code} under {agreement} has {len(rule_sets)} "
+            f"subdivisions: {listing}. Call evaluate_origin again with 'subdivision' set to "
+            "the number of the one that matches the product."
+        )
+    if subdivision is not None and not 1 <= subdivision <= len(rule_sets):
+        raise ValueError(f"no subdivision {subdivision}: the rule has {listing}")
+    chosen = rule_sets[(subdivision or 1) - 1]
+    if not chosen["criteria"]:
+        texts = "; ".join(chosen["not_machine_readable"])
+        raise ValueError(
+            f"the rule of origin of {hs_code} under {agreement} cannot be checked by this tool "
+            f"({texts[:300]}). It has to be checked by hand: tell the user, give no verdict."
+        )
+    return chosen
+
+
 @tool
 def evaluate_origin(
     agreement: Agreement,
     product_hs_code: HsCode,
     exw_price_eur: Annotated[float, Field(gt=0)],
     materials: Annotated[list[BomLine], Field(min_length=1)],
-    criteria: Annotated[list[Criterion], Field(min_length=1)],
     operations: list[Operation] | None = None,
     fob_price_eur: Annotated[float, Field(gt=0)] | None = None,
+    subdivision: Annotated[int, Field(ge=1)] | None = None,
 ) -> dict:
-    """Decide whether a product is originating under a rule of origin, material by material.
+    """Decide whether a product is originating, material by material, under the official
+    rule of origin of the agreement, which the tool looks up by itself.
 
-    Call it only once get_origin_rule has returned, in a later message, never in the same
-    one: 'criteria' must be copied from that result. The tool checks them against the
-    official rule and refuses any that are not in it. The product is originating if it
-    meets any one of them; the agreement's general tolerance is applied. Returns the
-    verdict, the criteria met, the % of non-originating materials over the ex-works price,
-    a trace per material and an evaluation_id for issue_origin_statement.
+    This is the only source of an origin verdict: never work one out yourself. If the rule
+    has several subdivisions, the tool lists them; call it again with 'subdivision'. The
+    agreement's general tolerance is applied. Returns the verdict, the criteria met, the %
+    of non-originating materials over the ex-works price, a trace per material, what could
+    not be checked, and an evaluation_id for issue_origin_statement.
 
     Args:
         agreement: TCA (United Kingdom), UE-JP (Japan), UE-KR (South Korea) or CETA (Canada).
         product_hs_code: HS code of the final product, 6 digits.
         exw_price_eur: Ex-works price of the product, in euros.
         materials: Bill of materials, one entry per material.
-        criteria: The 'criteria' list of the get_origin_rule result, copied as is (from the
-            rule set whose subdivision matches the product).
         operations: What the producer does to the materials. Leave it out for normal
             manufacturing. Only embalaje, etiquetado, pintado or limpieza never confer origin.
-        fob_price_eur: FOB price in euros. Needed only if a criterion uses FOB.
+        fob_price_eur: FOB price in euros, if the user gave it. Some rules have an
+            alternative on a FOB basis that is only checked with it.
+        subdivision: Number of the rule set that matches the product, as listed by
+            get_origin_rule or by this tool. Only when the rule has several.
     """
-    _check_shape(criteria, fob_price_eur)
-    check_criteria(agreement, product_hs_code, criteria)
-    return assess_origin(
+    chosen = official_rule_set(agreement, product_hs_code, subdivision)
+    criteria = chosen["criteria"]
+    not_checked = list(chosen["not_machine_readable"])
+    if fob_price_eur is None:  # alternatives are "or": leaving one out never makes a product pass
+        fob = [c for c in criteria if c["kind"] in VALUE_CRITERIA and c.get("basis") == "FOB"]
+        criteria = [c for c in criteria if c not in fob]
+        not_checked += [f"{_describe(c)}: needs fob_price_eur" for c in fob]
+        if not criteria:
+            raise ValueError("this rule is only on a FOB basis: give fob_price_eur")
+    result = assess_origin(
         agreement, product_hs_code, exw_price_eur, materials, criteria, operations, fob_price_eur
     )
+    rule = " or ".join(_describe(c) for c in criteria)
+    return {**result, "rule_applied": rule, "not_checked": not_checked}
 
 
 # ----------------------------------------------------------------- issue_origin_statement
@@ -771,9 +779,10 @@ def issue_origin_statement(
         place: City where the statement is made out, e.g. 'Valencia'.
         consignment_value_eur: Total value of the originating products on the invoice, in
             euros.
-        exporter_reference: REX number of the exporter (for UE-KR, the approved exporter
-            authorisation number), only if the user gave it: never make one up. Leave it
-            empty otherwise; above 6,000 euros it is required, so ask the user for it.
+        exporter_reference: REX number of the exporter, e.g. 'ESREXB46123456' (for UE-KR,
+            the approved exporter authorisation number), only if the user gave it: never
+            make one up. Leave it empty otherwise; above 6,000 euros it is required, so ask
+            the user for it.
     """
     evaluation = _EVALUATIONS.get(evaluation_id)
     if evaluation is None:
@@ -785,6 +794,18 @@ def issue_origin_statement(
     agreement = evaluation["agreement"]
     info = AGREEMENTS[agreement]
     exporter_reference = exporter_reference.strip()
+    if exporter_reference and info.reference_name == "REX number":
+        exporter_reference = re.sub(r"[\s.\-]", "", exporter_reference).upper()
+    if (
+        exporter_reference
+        and info.reference_name == "REX number"
+        and not REX_NUMBER.fullmatch(exporter_reference)
+    ):
+        raise ValueError(
+            f"{exporter_reference!r} is not a REX number (country code, 'REX', then the "
+            "number, e.g. 'ESREXB46123456'). Use the one the user gave; if they gave none, "
+            "leave it empty or ask them for it"
+        )
     if consignment_value_eur > EXPORTER_REFERENCE_THRESHOLD_EUR and not exporter_reference:
         raise ValueError(
             f"consignment of {consignment_value_eur:.2f} EUR: above "
