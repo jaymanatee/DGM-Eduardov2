@@ -429,17 +429,42 @@ def parse_rules_of_origin(
     }
 
 
+class ServiceUnavailable(RuntimeError):
+    """An outside service did not answer after every attempt."""
+
+
+_SERVICES = {
+    "data-api.ecb.europa.eu": "The ECB API",
+    "ec.europa.eu": "VIES",
+    "www.trade-tariff.service.gov.uk": "The UK Trade Tariff API",
+}
+
+
+def _unavailable(url: str, reason: str) -> ServiceUnavailable:
+    # The model never saw a network failure in training: with the bare 'ReadTimeout: ...' it
+    # made up an ECB rate once in 7 simulated outages (entry of 11/11). Say what to do.
+    host = url.split("/")[2]
+    return ServiceUnavailable(
+        f"{_SERVICES.get(host, host)} did not answer ({reason}) after {HTTP_ATTEMPTS} attempts: "
+        "no data came back. Say so, without any figure of your own; it may answer later."
+    )
+
+
 def _http_get(url: str, params: dict[str, Any] | None = None) -> requests.Response:
-    """GET with retries on time-outs, connection errors, 429 and 5xx; raises on the last one."""
+    """GET with retries on time-outs, connection errors, 429 and 5xx; on the last one, raises
+    ServiceUnavailable (other HTTP errors are raised at once)."""
     for attempt in range(1, HTTP_ATTEMPTS + 1):
         try:
             response = requests.get(url, params=params, timeout=HTTP_TIMEOUT)
-        except (requests.Timeout, requests.ConnectionError):
+        except (requests.Timeout, requests.ConnectionError) as error:
             if attempt == HTTP_ATTEMPTS:
-                raise
+                reason = "time-out" if isinstance(error, requests.Timeout) else "connection error"
+                raise _unavailable(url, reason) from error
         else:
             transient = response.status_code == 429 or response.status_code >= 500
-            if not transient or attempt == HTTP_ATTEMPTS:
+            if transient and attempt == HTTP_ATTEMPTS:
+                raise _unavailable(url, f"HTTP {response.status_code}")
+            if not transient:
                 response.raise_for_status()
                 return response
         time.sleep(HTTP_RETRY_PAUSE_S * attempt)

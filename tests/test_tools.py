@@ -277,10 +277,22 @@ def test_permanent_failures_are_not_retried(http):
     with pytest.raises(RuntimeError, match="INVALID_INPUT"):
         check_vat_number(vat_number="ESA28015865")
     assert len(http.calls) == 1
-    http.calls = []
+
+
+def test_a_service_that_never_answers_says_so(http):
+    # After the last attempt the model is told plainly that nothing came back.
     http.sequence = [tools.requests.ConnectionError("down")] * 3
-    with pytest.raises(tools.requests.ConnectionError):
+    with pytest.raises(tools.ServiceUnavailable, match=r"ECB API .*connection error.*any figure"):
         get_exchange_rate(currency="JPY")
+    assert len(http.calls) == 3
+    http.calls = []
+    http.sequence = [tools.requests.Timeout("read timed out")] * 3
+    with pytest.raises(tools.ServiceUnavailable, match=r"^VIES did not answer \(time-out\)"):
+        check_vat_number(vat_number="ESA28015865")
+    http.calls = []
+    http.sequence = [FakeResponse(status=504)] * 3
+    with pytest.raises(tools.ServiceUnavailable, match=r"HTTP 504.*no data came back"):
+        get_exchange_rate(currency="JPY", month="2026-09")
     assert len(http.calls) == 3
 
 

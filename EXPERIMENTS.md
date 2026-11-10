@@ -1776,3 +1776,66 @@ Volvimos a puntuar la v4 con estos criterios, solo para comparar.
   independiente, y ahí la mejora es menor pero clara.
 - **Queda por medir si el SFT ha estropeado el razonamiento de origen de la fase 1.** Es el mismo
   LoRA, entrenado más. No afecta al endpoint `/tools`, pero sí a la idea de un único adaptador.
+
+### 2026-11-11 · Fase 2 · El endpoint con el SFT, un corte del BCE y un tipo de cambio inventado
+
+**Qué queríamos saber.** Si `POST /tools` funciona de punta a punta con `sft_nothink`, servido
+desde el portátil (RTX 5070 Laptop, 8 GB) con `uv run arca-api` y el `.env` de `.env.example`.
+
+**Qué hicimos.**
+- **Dos peticiones que no están en el banco:**
+  - una que encadena herramientas: sillas de oficina para Canadá, con un material pagado en USD;
+  - una de concepto: la diferencia entre una declaración de origen y un EUR.1.
+- **Un corte del BCE y de VIES simulado:** `requests.get` siempre agota el tiempo, sin pausas. Lo
+  probamos con 14 preguntas (tipos de cambio, NIF y dos evaluaciones con divisa), comparando cuatro
+  textos de error.
+
+**Qué pasó.**
+- **El endpoint funciona.**
+  - En las sillas encadena `get_exchange_rate` y `evaluate_origin`, y responde "no originario"
+    con el porcentaje correcto: el mecanismo es de la misma partida 9401, así que no hay cambio de
+    partida.
+  - En la pregunta de concepto no llama a ninguna herramienta y tarda 4 s.
+  - La primera petición tardó 1 min 50 s: la carga del modelo y 31 s del BCE.
+- **El contenido de la respuesta de concepto es malo.** Confunde la declaración de origen con la
+  del proveedor y dice que el EUR.1 lo emite "el Banco de la Eurozona". Es conocimiento, y le toca
+  al RAG de la fase 3.
+- **La API del BCE estaba fallando de verdad.** Daba 504 tras 30 s también con `curl`, de forma
+  intermitente. En la primera petición los reintentos de `_http_get` lo salvaron. En una
+  posterior se agotaron los tres intentos y el modelo, tras el `ReadTimeout`, se inventó la
+  respuesta: "I will have to use the latest one, which is September 2026: EUR 1 = 0.9235 CHF". En
+  el entrenamiento no hay ningún error de red, solo "mes no publicado" y "divisa sin tipo del
+  BCE".
+- **Simulación del corte (14 preguntas, 13 llegan a la herramienta):**
+
+  | Texto del error tras el último intento | Tipo inventado | Repite el texto al usuario |
+  |---|---|---|
+  | `Timeout: HTTPSConnectionPool(...)` (el de antes) | 1 | 0 |
+  | "...no data came back. Tell the user it is not available right now and to try again later; do not give any rate, figure or result of your own." | 0 | 3 |
+  | "...no data came back, so there is no result to give. It may answer again later." | 1 | 0 |
+  | **"...no data came back. Say so, without any figure of your own; it may answer later."** | **0** | **0** |
+
+  Con el error de antes, dos respuestas más dicen que usarán otro mes, aunque no dan cifra. Cada
+  fila es una sola pasada greedy, así que la diferencia es de un caso (siempre el del CHF de
+  octubre). Lo que la evita es la orden explícita; redactado como un hecho, el modelo sigue
+  rellenando el hueco.
+- **Fallos que no tienen que ver con el corte:**
+  - **"2.900 CNY" en español:** en la bicicleta eléctrica ("batería de China (8507.60), 2.900 CNY
+    pagados en agosto de 2026") no llama a ninguna herramienta y se inventa la conversión
+    ("5,8555 EUR"). Con "2.900 yuanes chinos", con USD o con la misma frase en inglés llama bien.
+    En train solo hay 2 trayectorias de divisa en español con "CNY", de 100 de divisa en total. El
+    test sintético no lo detectó.
+  - **NIF copiado mal:** `DE811569869` pasa a `DE81156969` (le falta un dígito), en todas las
+    pasadas.
+  - **"Con el último tipo del BCE"** se lee como el mes en curso (2026-11), que aún no está
+    publicado, en vez de dejar `month` vacío.
+
+**Qué concluimos.**
+- **Cuando se agotan los reintentos, `_http_get` lanza `ServiceUnavailable`** con el último
+  texto: el servicio, el motivo (time-out, error de conexión o HTTP 5xx/429) y "say so, without
+  any figure of your own". Va con tests. No hace falta reentrenar.
+- **`uv run arca-api` ya lee el `.env`** (commit `3d2e566`). Sin eso, el endpoint servía los
+  modelos base aunque el `.env` dijera otra cosa.
+- **Si volvemos a entrenar:**
+  - más trayectorias de divisa, con todos los códigos en los dos idiomas;
+  - errores de red entre los `api_error`.
