@@ -8,7 +8,7 @@ from datetime import date
 import pytest
 
 from tool_use.evaluate import load_bench
-from tool_use.sft import generate
+from tool_use.sft import build, generate, no_tools
 from tool_use.sft.catalog import BENCH_HEADINGS, PRODUCTS
 from tool_use.sft.fetch import ecb_path, load_rule, roo_path
 from tool_use.sft.generate import assistant_text, evaluation_trajectory, replay
@@ -181,3 +181,68 @@ def test_offline_ecb_publishes_a_month_only_once_it_is_over():
         assert get_exchange_rate(currency="USD")["month"] == "2026-02"
         with pytest.raises(ValueError, match="once the month is over"):
             get_exchange_rate(currency="USD", month="2026-03")
+
+
+# ------------------------------------------------------------------------- the whole dataset
+
+
+SMALL = {split: build.build_split(split, 0.03, seed=5) for split in ("train", "val", "test")}
+NO_TOOL_KINDS = {"concept", "off_topic", "out_of_scope", "missing_info"}
+
+
+def test_every_kind_is_in_every_split():
+    for split, trajectories in SMALL.items():
+        assert {t.kind for t in trajectories} == set(build.COUNTS), split
+
+
+def test_splits_share_no_product_topic_or_uncovered_agreement():
+    def seen(split, attribute):
+        return {getattr(t, attribute) for t in SMALL[split]} - {""}
+
+    products = {s: seen(s, "product") for s in SMALL}
+    assert products["test"] <= build.TEST_PRODUCTS and products["val"] <= build.VAL_PRODUCTS
+    assert not products["train"] & (build.TEST_PRODUCTS | build.VAL_PRODUCTS)
+    topics = {s: {t.outcome for t in SMALL[s] if t.kind == "concept"} for s in SMALL}
+    assert topics["test"] <= build.TEST_TOPICS and not topics["train"] & build.TEST_TOPICS
+    countries = {c[3] for c in no_tools.OTHER_AGREEMENTS if c[3] in build.TEST_AGREEMENTS}
+    train_text = json.dumps([t.messages for t in SMALL["train"]], ensure_ascii=False)
+    assert not any(c in train_text for c in countries)
+
+
+def test_no_tool_trajectories_call_nothing_and_answer_in_one_turn():
+    for trajectories in SMALL.values():
+        for t in trajectories:
+            if t.kind in NO_TOOL_KINDS:
+                assert [m["role"] for m in t.messages] == ["user", "assistant"], t.kind
+                assert "<tool_call>" not in t.messages[1]["content"]
+
+
+def test_one_trajectory_of_each_kind_replays_through_the_real_loop():
+    firsts = {}
+    for t in SMALL["train"]:
+        firsts.setdefault(t.kind, t)
+    for t in firsts.values():
+        expected = [
+            {"role": "assistant", "content": assistant_text(m, thinking=True)}
+            if m["role"] == "assistant"
+            else m
+            for m in t.messages
+        ]
+        assert replay(t) == expected, t.kind
+
+
+def test_no_benchmark_question_or_value_in_any_kind():
+    values, queries = [], []
+    for case in load_bench("tool_use/bench/cases.jsonl", today=TODAY):
+        queries.append(case["query"])
+        expectations = case.get("expected_calls", []) + case.get("optional_calls", [])
+        for arguments in [e["arguments"] for e in expectations] + [
+            case.get("expected_arguments", {})
+        ]:
+            values += [v for v in arguments.values() if isinstance(v, str) and len(v) >= 8]
+    text = json.dumps([t.messages for ts in SMALL.values() for t in ts], ensure_ascii=False)
+    assert [v for v in values if v in text] == []
+    users = {t.messages[0]["content"] for ts in SMALL.values() for t in ts}
+    assert not users & set(queries)
+    concept_questions = {q for c in no_tools.CONCEPTS.values() for q in c[0] + c[1]}
+    assert not concept_questions & set(queries)

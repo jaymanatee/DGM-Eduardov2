@@ -47,7 +47,7 @@ EU_COUNTRIES = {  # ISO code: (es, en, cities)
     "FR": ("Francia", "France", ("Lyon", "Toulouse", "Lille", "Nantes", "Grenoble")),
     "IT": ("Italia", "Italy", ("Bolonia", "Turín", "Brescia", "Verona", "Padua")),
     "PT": ("Portugal", "Portugal", ("Braga", "Aveiro", "Coímbra", "Leiria")),
-    "NL": ("Países Bajos", "the Netherlands", ("Eindhoven", "Utrecht", "Tilburg")),
+    "NL": ("los Países Bajos", "the Netherlands", ("Eindhoven", "Utrecht", "Tilburg")),
     "PL": ("Polonia", "Poland", ("Poznan", "Wroclaw", "Lodz")),
     "CZ": ("Chequia", "Czechia", ("Brno", "Ostrava", "Pilsen")),
 }
@@ -313,6 +313,7 @@ class Trajectory:
     agreement: str = ""
     outcome: str = ""
     seed: int = 0  # of the evaluation ids, so that replay() gets the same ones
+    vies: dict[str, Any] = field(default_factory=dict)  # VAT number -> VIES's made-up answer
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -392,7 +393,7 @@ def sample_lines(rng: random.Random, product: Product, agreement: str, exw: floa
     for material, weight in zip(materials, weights, strict=True):
         value = exw * share * weight / total
         value = round(value) if value > 50 and rng.random() < 0.6 else round(value, 2)
-        value = max(value, 0.5)
+        value = max(value, 0.01)  # the share caps the total below the ex-works price
         origin = rng.choices(("UE", "SOCIO", "TERCERO", "DESCONOCIDO"), (36, 12, 42, 10))[0]
         if origin == "UE":
             code = pick(rng, list(EU_COUNTRIES))
@@ -1080,7 +1081,7 @@ def replay(t: Trajectory) -> list[dict[str, Any]]:
 
     loop = Scripted(registry=tools.default_registry(), thinking=True)
     [query] = [m["content"] for m in t.messages if m["role"] == "user"]
-    with Offline(date.fromisoformat(t.today), random.Random(t.seed)):
+    with Offline(date.fromisoformat(t.today), random.Random(t.seed), vies=t.vies):
         loop.run(query, max_turns=8)
     return loop.last_messages[1:]  # without the system prompt
 
