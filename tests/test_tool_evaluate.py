@@ -117,13 +117,14 @@ def test_answer_contains_with_alternatives():
     assert not score_case(case, [], "Son 282 EUR")["answer_ok"]
 
 
-def test_answer_excludes_the_opposite_verdict():
+def test_verdict_excludes_looks_at_the_first_sentence_only():
     case = {"needs_tool": False, "answer_contains": ["38"]}
-    case["answer_excludes"] = ["are not originating"]
+    case["verdict_excludes"] = ["are not originating"]
     assert score_case(case, [], "They are originating: 38 % non-originating.")["answer_ok"]
     assert not score_case(case, [], "They are NOT originating (38 %).")["answer_ok"]
     assert not score_case(case, [], "They are **not originating** (38 %).")["answer_ok"]
-    assert not score_case({"needs_tool": False, "answer_excludes": ["x"]}, [], "x")["answer_ok"]
+    explained = "They are originating.\nThe cells (38 %) are not originating, the casing is."
+    assert score_case(case, [], explained)["answer_ok"]
 
 
 def test_summary_breaks_down_by_category():

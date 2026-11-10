@@ -27,8 +27,9 @@ Optional fields, for what the first call alone cannot show (``tool_use/bench/cas
   the user never gave them (an invented REX number on a statement).
 * ``answer_contains``: strings the final answer must contain; an item that is a list means
   any of its alternatives. This is the metric that compares the model with and without tools.
-* ``answer_excludes``: strings the final answer must not contain, such as the opposite
-  verdict ("are not originating" when the product is originating).
+* ``verdict_excludes``: strings the first sentence of the answer, where the verdict is, must
+  not contain: the opposite verdict ("are not originating" when the product is originating).
+  Only the first sentence, since the explanation may well say that a material is not.
 * ``category``: free label, used to break the metrics down.
 
 How arguments are compared: both sides go through the tool's own validation first, so what
@@ -171,12 +172,13 @@ def score_case(
         scores["calls_ok"] = found and not forbidden_tool and not invented
         scores["invented_arguments"] = invented
 
-    if "answer_contains" in case or "answer_excludes" in case:
+    if "answer_contains" in case or "verdict_excludes" in case:
         text = re.sub(r"[*_`]", "", answer.lower())  # "are **not** originating" counts
+        verdict = next((s for s in re.split(r"(?<=[.!?])\s+|\n", text.strip()) if s), "")
         scores["answer_ok"] = all(
             any(alt.lower() in text for alt in ([item] if isinstance(item, str) else item))
             for item in case.get("answer_contains", [])
-        ) and not any(bad.lower() in text for bad in case.get("answer_excludes", []))
+        ) and not any(bad.lower() in verdict for bad in case.get("verdict_excludes", []))
     return scores
 
 

@@ -7,7 +7,7 @@
     "n_cases": 31,
     "multi_call_accuracy": 0.615,
     "n_multi_call_accuracy": 13,
-    "answer_accuracy": 0.7,
+    "answer_accuracy": 0.75,
     "n_answer_accuracy": 20,
     "mean_turns": 2.03,
     "tool_calls": 55,
@@ -25,7 +25,7 @@
         "selection_ok": 1.0,
         "arguments_ok": 0.833,
         "calls_ok": 0.667,
-        "answer_ok": 0.5
+        "answer_ok": 0.667
       },
       "no_tool": {
         "n": 7,
@@ -1194,6 +1194,16 @@
       "forbidden_tools": [
         "issue_origin_statement"
       ],
+      "verdict_excludes": [
+        "are not originating",
+        "is not originating",
+        "does not qualify",
+        "do not qualify",
+        "no es originario",
+        "no son originarios",
+        "no es de origen",
+        "no son de origen"
+      ],
       "answer_excludes": [
         "are not originating",
         "is not originating",
@@ -1396,6 +1406,16 @@
       ],
       "forbidden_tools": [
         "issue_origin_statement"
+      ],
+      "verdict_excludes": [
+        "are not originating",
+        "is not originating",
+        "does not qualify",
+        "do not qualify",
+        "no es originario",
+        "no son originarios",
+        "no es de origen",
+        "no son de origen"
       ],
       "answer_excludes": [
         "are not originating",
@@ -1896,6 +1916,16 @@
       "forbidden_tools": [
         "issue_origin_statement"
       ],
+      "verdict_excludes": [
+        "are not originating",
+        "is not originating",
+        "does not qualify",
+        "do not qualify",
+        "no es originario",
+        "no son originarios",
+        "no es de origen",
+        "no son de origen"
+      ],
       "answer_excludes": [
         "are not originating",
         "is not originating",
@@ -2027,7 +2057,7 @@
       "arguments_ok": true,
       "calls_ok": true,
       "invented_arguments": [],
-      "answer_ok": false
+      "answer_ok": true
     },
     {
       "id": "chain-05",
@@ -2069,6 +2099,16 @@
       ],
       "forbidden_tools": [
         "issue_origin_statement"
+      ],
+      "verdict_excludes": [
+        "are not originating",
+        "is not originating",
+        "does not qualify",
+        "do not qualify",
+        "no es originario",
+        "no son originarios",
+        "no es de origen",
+        "no son de origen"
       ],
       "answer_excludes": [
         "are not originating",
@@ -2337,6 +2377,16 @@
       ],
       "forbidden_tools": [
         "issue_origin_statement"
+      ],
+      "verdict_excludes": [
+        "are not originating",
+        "is not originating",
+        "does not qualify",
+        "do not qualify",
+        "no es originario",
+        "no son originarios",
+        "no es de origen",
+        "no son de origen"
       ],
       "answer_excludes": [
         "are not originating",
@@ -2617,6 +2667,16 @@
           }
         }
       ],
+      "verdict_excludes": [
+        "are not originating",
+        "is not originating",
+        "does not qualify",
+        "do not qualify",
+        "no es originario",
+        "no son originarios",
+        "no es de origen",
+        "no son de origen"
+      ],
       "answer_excludes": [
         "are not originating",
         "is not originating",
@@ -2854,6 +2914,16 @@
             "agreement": "TCA"
           }
         }
+      ],
+      "verdict_excludes": [
+        "are not originating",
+        "is not originating",
+        "does not qualify",
+        "do not qualify",
+        "no es originario",
+        "no son originarios",
+        "no es de origen",
+        "no son de origen"
       ],
       "answer_excludes": [
         "are not originating",
@@ -3521,6 +3591,16 @@
             "agreement": "CETA"
           }
         }
+      ],
+      "verdict_excludes": [
+        "are not originating",
+        "is not originating",
+        "does not qualify",
+        "do not qualify",
+        "no es originario",
+        "no son originarios",
+        "no es de origen",
+        "no son de origen"
       ],
       "answer_excludes": [
         "are not originating",
