@@ -1648,3 +1648,131 @@ Volvimos a puntuar la v4 con estos criterios, solo para comparar.
 - **El SFT tendrá que quitarle al modelo de la fase 1 la costumbre de calcular el origen él mismo.**
 - **Para elegir subdivisión hay pocos ejemplos que acaben en veredicto** (5 de 29). Lo tendremos en
   cuenta al ver los resultados de `chain-06`.
+
+### 2026-11-10 · Fase 2 · SFT para tool use (2): 2.000 trayectorias, dos adaptadores y la comparación con el base y la fase 1
+
+**Qué queríamos saber.**
+- Si un SFT con trayectorias sintéticas hace que el modelo de la fase 1 use bien las herramientas,
+  cuando antes lo hacía peor que el base.
+- Si el razonamiento corto (`think`) ayuda o estorba frente a no razonar (`nothink`).
+- Qué configuración sirve el endpoint `/tools`.
+
+**Qué hicimos.**
+- **Trayectorias** (`tool_use/sft/generate.py`, `lookups.py`, `no_tools.py`, `build.py`):
+  conversaciones completas con las herramientas reales funcionando offline en la fecha de cada
+  trayectoria. Hay reglas en disco, el BCE filtrado a los meses ya publicados y un VIES simulado.
+  - **Tamaño:** 2.000 de train (4.180 turnos del asistente), 200 de validación y 200 de test.
+    Mitad en español y mitad en inglés.
+  - **Tipos:** 13. Evaluación, declaración, subdivisión, divisa, regla, tipo de cambio, NIF,
+    llamadas paralelas, error de la API, falta un dato, concepto, fuera de alcance y fuera de tema.
+  - **Particiones sin solapes:** test y validación usan productos, conceptos y acuerdos ajenos que
+    no aparecen en train. Los 10 productos del test no están en train. Ningún producto comparte
+    partida con el banco.
+  - **Comprobación:** las 2.400 trayectorias se reproducen exactas con el `ToolLoop` real
+    (`replay`).
+- **Ejemplos** (`render.py`): uno por turno del asistente. El prompt lo genera el bucle real, con
+  system prompt y fecha. La pérdida solo cuenta la respuesta. La mediana es de 3,1k tokens y el
+  máximo, 4.446, así que no se corta ninguno.
+- **Entrenamiento** (`train.py`): sigue el LoRA de `grpo_pps3`, en dos variantes:
+  - `think`: `<think>` corto y luego las llamadas o la respuesta;
+  - `nothink`: lo mismo sin razonamiento.
+
+  Configuración: 1 época, lr 1e-4, coseno, lote efectivo 16, unos 260 pasos. En la DGX tardó 2 h
+  (`think`) y 1 h 55 min (`nothink`).
+- **Evaluación** (`run_evaluations.sh`): cinco configuraciones en el banco de 31 casos y en el test
+  sintético de 200:
+  - `base`: Qwen3-1.7B sin adaptador y sin thinking;
+  - `phase1_nothink` y `phase1_think`: `grpo_pps3`;
+  - `sft_think` y `sft_nothink`.
+
+  En el test sintético, `evaluate_synthetic.py` mide cuatro cosas:
+  - **selección:** si la primera llamada es correcta;
+  - **llamadas:** las requeridas, con los argumentos bien y sin declaraciones indebidas;
+  - **respuesta:** el veredicto en la primera frase, la cifra o el nombre;
+  - **declaraciones falsas y referencias inventadas.**
+
+**Qué pasó.**
+- **Pérdida:** converge sin sobreajuste.
+
+  | | eval_loss inicial | eval_loss final | Precisión por token |
+  |---|---|---|---|
+  | `think` | 1,72 | 0,051 | 98,7 % |
+  | `nothink` | 1,20 | 0,035 | 99,3 % |
+
+  El 90 % de la bajada ocurre en el primer tercio. La validación sale del mismo generador, así que
+  esto solo dice que aprendió el formato.
+- **Test sintético (200):**
+
+  | | Selección | Llamadas | Respuesta | Decl. falsas | Ref. inventadas | s/caso |
+  |---|---|---|---|---|---|---|
+  | base | 89,5 % | 49,0 % | 50,0 % | 1 | 2 | 5,7 |
+  | fase 1, sin thinking | 26,0 % | 24,0 % | 29,6 % | 0 | 0 | 7,7 |
+  | fase 1, con thinking | 61,5 % | 44,0 % | 39,4 % | 0 | 8 | 22,3 |
+  | SFT `think` | 95,0 % | 81,5 % | 83,1 % | 0 | 0 | 5,3 |
+  | **SFT `nothink`** | **98,5 %** | **85,5 %** | **88,7 %** | 0 | 0 | **3,7** |
+
+  Llamadas correctas por tipo (base → SFT `nothink`):
+  - evaluación: 31 → 91 %;
+  - declaración: 13 → 67 %;
+  - subdivisión: 13 → 33 %;
+  - divisa: 0 → 80 %;
+  - falta un dato: 0 → 70 %.
+- **Banco (31):**
+
+  | | Selección | Argumentos | Multi-llamada (13) | Respuesta (20) | Llamadas fallidas | s/caso |
+  |---|---|---|---|---|---|---|
+  | base | 29 | 27 | 8 | 14 | 11 de 55 | 4,8 |
+  | fase 1, sin thinking | 9 | 9 | 0 | 4 | 0 de 2 | 5,7 |
+  | fase 1, con thinking | 25 | 23 | 6 | 10 | 2 de 22 | 20,2 |
+  | SFT `think` | 30 | 28 | 10 | 17 | 2 de 32 | 5,1 |
+  | **SFT `nothink`** | **31** | **30** | **12** | **18** | 3 de 32 | **3,9** |
+
+  Cada diferencia con el base está en el borde del ruido del banco (±3 casos), pero todas van en la
+  misma dirección, y el test sintético las confirma con 200 casos.
+- **Fallos que le quedan a SFT `nothink` (29 casos del sintético):**
+  - **Elige mal la subdivisión: 16 casos, el 55 % de sus fallos.**
+    - En la furgoneta diésel (TCA 8704.21) elige la 1, la de los híbridos.
+    - En los cepillos de dientes (UE-KR 9603.21) elige la 2, "cualquier otro producto", cuando la
+      1 dice "brushes".
+    - En el banco, en `chain-06`, elige la 1 (baterías para vehículos) en vez de la 3, "others".
+      Los dos SFT fallan ahí.
+
+    En train solo hay 24 pares de producto y acuerdo con subdivisión. Los vehículos de train
+    (eléctrico, híbrido enchufable, autobús) casi siempre eran la 1. El modelo memoriza producto →
+    número y no lee la lista.
+  - **Intenta emitir sin la referencia del exportador: 6 casos.** Pasa en envíos de más de 6.000 €
+    cuando el usuario no la dio. La herramienta lo rechaza y después la pide, así que no se emite
+    ninguna declaración. Pero la respuesta se salta el veredicto.
+  - **Se inventa el precio franco fábrica: 3 casos.** Cuando falta, usa el valor de un material y la
+    herramienta lo rechaza por la suma de materiales.
+  - **4 sueltos:**
+    - tres con un material mal puesto: un código duplicado, Suiza como UE y Chequia como tercer
+      país;
+    - una declaración que tocaba y no se emitió.
+
+    Las de Suiza y Chequia no cambian el veredicto.
+- **Fallos de SFT `think` (37):** los mismos de subdivisión (8) y de falta de un dato (4), y además:
+  - **No emite 11 declaraciones que tocaban:** el razonamiento copia la plantilla de "hace falta el
+    REX". Escribe "the consignment is 4,800 EUR, above 6,000 EUR" o pide el REX que el usuario ya
+    había dado. A cambio, no hace intentos sin referencia como `nothink`.
+  - **Pasa importes en divisa como si fueran euros: 3 casos.**
+  - **Busca una regla ante preguntas de concepto: 2 en el sintético y `none-02` en el banco.**
+- **Las dos configuraciones de la fase 1 siguen peor que el base.**
+  - Sin thinking apenas llama a herramientas (2 llamadas en 31 casos).
+  - Con thinking se inventa 8 referencias y tarda 20 s por caso.
+
+  El SFT corrige las dos cosas.
+
+**Qué concluimos.**
+- **El SFT funciona, y nos quedamos con `nothink`.** Es mejor que `think` en todo: 85,5 % de
+  llamadas frente a 81,5 %, y 18 respuestas del banco frente a 17. Además es el más rápido (3,7 s).
+  El razonamiento corto no aporta y mete errores de aritmética al copiar la plantilla.
+- **Endpoint:** `ARCA_TOOLS_ADAPTER=tool_use/weights/sft_nothink` y `ARCA_TOOLS_THINKING=0`.
+- **Ninguna configuración del SFT ha emitido una declaración falsa ni se ha inventado una
+  referencia.**
+- **Lo más flojo es elegir subdivisión.** Si volvemos a entrenar, harían falta más productos
+  distintos por regla, para que la elección dependa del texto y no del producto.
+- **El test sintético sobreestima:** comparte plantillas con train. El banco es la medida
+  independiente, y ahí la mejora es menor pero clara.
+- **Queda por medir si el SFT ha estropeado el razonamiento de origen de la fase 1.** Es el mismo
+  LoRA, entrenado más. No afecta al endpoint `/tools`, pero sí a la idea de un único adaptador.
