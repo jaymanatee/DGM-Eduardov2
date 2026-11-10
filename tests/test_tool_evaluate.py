@@ -117,6 +117,15 @@ def test_answer_contains_with_alternatives():
     assert not score_case(case, [], "Son 282 EUR")["answer_ok"]
 
 
+def test_answer_excludes_the_opposite_verdict():
+    case = {"needs_tool": False, "answer_contains": ["38"]}
+    case["answer_excludes"] = ["are not originating"]
+    assert score_case(case, [], "They are originating: 38 % non-originating.")["answer_ok"]
+    assert not score_case(case, [], "They are NOT originating (38 %).")["answer_ok"]
+    assert not score_case(case, [], "They are **not originating** (38 %).")["answer_ok"]
+    assert not score_case({"needs_tool": False, "answer_excludes": ["x"]}, [], "x")["answer_ok"]
+
+
 def test_summary_breaks_down_by_category():
     rows = [
         {"category": "a", "selection_ok": True, "arguments_ok": True, "answer_ok": False},
@@ -150,6 +159,22 @@ def test_bench_has_31_cases_with_known_tools():
         names += [e["tool"] for e in case.get("expected_calls", [])]
         names += case.get("forbidden_tools", []) + list(case.get("forbidden_arguments", {}))
         assert set(names) <= set(REGISTRY.tools), case["id"]
+
+
+def test_the_prompt_gives_away_no_value_the_bench_expects():
+    """A value the model must take from the user (an invoice, a REX or VAT number) must not
+    be an example in a tool description: copying the example would score as right."""
+    from tool_use.executor import build_system_prompt
+
+    prompt = build_system_prompt(REGISTRY).lower()
+    for case in BENCH:
+        expectations = case.get("expected_calls", []) + case.get("optional_calls", [])
+        argument_sets = [e["arguments"] for e in expectations]
+        argument_sets.append(case.get("expected_arguments", {}))
+        for arguments in argument_sets:
+            for value in arguments.values():
+                if isinstance(value, str) and len(value) >= 8:  # not agreements or HS codes
+                    assert value.lower() not in prompt, (case["id"], value)
 
 
 @pytest.mark.parametrize(

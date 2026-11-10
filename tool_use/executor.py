@@ -85,6 +85,7 @@ needs the result of another one (an evaluation_id), wait for that result and mak
 in your next message.
 Whether a product is originating comes only from evaluate_origin: never work out a verdict
 yourself. If it returns an error, fix the call as the error says and call it again.
+Issue a statement on origin only when the user asks for one.
 Never tell the user that something was done (a statement issued, a number checked) unless
 the tool result says so; if a tool returned an error, say what failed.
 Questions about general concepts can be answered directly, without tools. Answer in the

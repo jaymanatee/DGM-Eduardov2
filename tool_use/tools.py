@@ -188,6 +188,14 @@ HsCode = Annotated[
     Field(pattern=r"^\d{6}$", description="HS subheading, 6 digits, e.g. '850760'"),
 ]
 Operation = Literal[(*SUFFICIENT_OPERATIONS, *INSUFFICIENT_OPERATIONS)]
+
+
+def _as_list(value: Any) -> Any:
+    """A single value where a list is expected ('fabricacion' for ['fabricacion'])."""
+    return [value] if isinstance(value, str) else value
+
+
+Operations = Annotated[list[Operation], BeforeValidator(_as_list)]
 Currency = Annotated[str, BeforeValidator(_upper), Field(pattern=r"^[A-Z]{3}$")]
 Month = Annotated[str, Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")]
 VatNumber = Annotated[str, BeforeValidator(_compact_vat)]
@@ -504,11 +512,11 @@ def check_vat_number(vat_number: VatNumber) -> dict:
     """Check in VIES, the European Commission's system, whether an EU VAT number is valid.
 
     Use it to check a VAT number the user wrote (supplier, customer or exporter); never
-    one you made up. A REX number such as 'ESREXB46123456' is not a VAT number.
+    one you made up. A REX number ('ESREX' followed by digits) is not a VAT number.
 
     Args:
-        vat_number: VAT number with its two-letter country prefix, e.g. 'ESA28015865' or
-            'FR 40 303 265 045'. Greece uses 'EL' and Northern Ireland 'XI'. British (GB)
+        vat_number: VAT number with its two-letter country prefix, e.g. 'DE123456789' or
+            'it 123 456 789 01'. Greece uses 'EL' and Northern Ireland 'XI'. British (GB)
             numbers are not in VIES.
     """
     match = re.fullmatch(r"([A-Z]{2})([0-9A-Z+*]{2,12})", vat_number)
@@ -642,12 +650,22 @@ def _describe(criterion: dict[str, Any]) -> str:
     return f"{criterion['kind']} {criterion['threshold_pct']} % {criterion.get('basis', 'EXW')}"
 
 
+def _subdivision_label(text: str | None) -> str:
+    """The whole text: what tells the subdivisions apart is often at the end ("... of
+    vehicles of headings 8702, 8703 and 8704")."""
+    if not text:
+        return "all products"
+    if text.strip().lower().rstrip(".") in ("other", "others"):
+        return "others (any product not covered by the subdivisions above)"
+    return text.strip()
+
+
 def official_rule_set(agreement: str, hs_code: str, subdivision: int | None) -> dict[str, Any]:
     """The rule set of the official rule that evaluate_origin applies, or a ValueError that
     tells the model what to do (pick a subdivision, or check by hand)."""
     rule_sets = _rule_of_origin(hs_code, agreement)["rule_sets"]
     listing = "; ".join(
-        f"{i}) {(rs['subdivision'] or 'all products')[:150]}" for i, rs in enumerate(rule_sets, 1)
+        f"{i}) {_subdivision_label(rs['subdivision'])}" for i, rs in enumerate(rule_sets, 1)
     )
     if subdivision is None and len(rule_sets) > 1:
         raise ValueError(
@@ -673,7 +691,7 @@ def evaluate_origin(
     product_hs_code: HsCode,
     exw_price_eur: Annotated[float, Field(gt=0)],
     materials: Annotated[list[BomLine], Field(min_length=1)],
-    operations: list[Operation] | None = None,
+    operations: Operations | None = None,
     fob_price_eur: Annotated[float, Field(gt=0)] | None = None,
     subdivision: Annotated[int, Field(ge=1)] | None = None,
 ) -> dict:
@@ -698,6 +716,12 @@ def evaluate_origin(
         subdivision: Number of the rule set that matches the product, as listed by
             get_origin_rule or by this tool. Only when the rule has several.
     """
+    total = sum(m["value_eur"] for m in materials)
+    if total > exw_price_eur:
+        raise ValueError(
+            f"the materials add up to {total:.2f} EUR, more than the ex-works price "
+            f"({exw_price_eur:.2f} EUR): list each material once, with the values the user gave"
+        )
     chosen = official_rule_set(agreement, product_hs_code, subdivision)
     criteria = chosen["criteria"]
     not_checked = list(chosen["not_machine_readable"])
@@ -766,20 +790,22 @@ def issue_origin_statement(
 ) -> dict:
     """Write the statement on origin for an invoice, with the exact text of the agreement.
 
-    Only after evaluate_origin has returned originating: true, in a later message: pass the
-    evaluation_id it returned. If the product is not originating, do not call it; tell the
-    user why. The statement is saved as a file and is not overwritten if the invoice already
-    has one.
+    Only when the user asks for a statement and gave the invoice number, the exporter's name
+    and the place; never fill those in yourself. Only after evaluate_origin has returned
+    originating: true, in a later message: pass the evaluation_id it returned. If the
+    product is not originating, do not call it; tell the user why. The statement is saved
+    as a file and is not overwritten if the invoice already has one.
 
     Args:
         evaluation_id: The evaluation_id that evaluate_origin returned in this conversation.
             Never guess one.
-        invoice_number: Number of the invoice the statement goes on, e.g. 'F-2026-118'.
-        exporter_name: Legal name of the exporter.
-        place: City where the statement is made out, e.g. 'Valencia'.
+        invoice_number: Number of the invoice the statement goes on, as the user wrote it.
+        exporter_name: Legal name of the exporter, as the user wrote it.
+        place: City where the statement is made out, as the user wrote it.
         consignment_value_eur: Total value of the originating products on the invoice, in
             euros.
-        exporter_reference: REX number of the exporter, e.g. 'ESREXB46123456' (for UE-KR,
+        exporter_reference: REX number of the exporter: country code, 'REX', then the
+            exporter's own number, as in 'ESREX...' (for UE-KR,
             the approved exporter authorisation number), only if the user gave it: never
             make one up. Leave it empty otherwise; above 6,000 euros it is required, so ask
             the user for it.
@@ -803,7 +829,7 @@ def issue_origin_statement(
     ):
         raise ValueError(
             f"{exporter_reference!r} is not a REX number (country code, 'REX', then the "
-            "number, e.g. 'ESREXB46123456'). Use the one the user gave; if they gave none, "
+            "exporter's own number). Use the one the user gave; if they gave none, "
             "leave it empty or ask them for it"
         )
     if consignment_value_eur > EXPORTER_REFERENCE_THRESHOLD_EUR and not exporter_reference:

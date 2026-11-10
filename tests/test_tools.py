@@ -334,7 +334,10 @@ def test_evaluate_origin_asks_for_the_subdivision_when_there_are_several(rules):
     # The TCA has three rule sets for 850760: vehicle battery packs, cells, and others.
     ambiguous = registry.call("evaluate_origin", battery(agreement="TCA"))
     assert not ambiguous.ok and "3 subdivisions" in ambiguous.error
-    assert "1) Accumulators" in ambiguous.error and "3) others" in ambiguous.error
+    assert "1) Accumulators" in ambiguous.error
+    # Whole texts: what sets the vehicle packs apart from e-bike packs is at the very end.
+    assert ambiguous.error.lower().count("vehicles of headings 8702, 8703 and 8704") == 2
+    assert "3) others (any product not covered by the subdivisions above)" in ambiguous.error
     others = evaluate_origin(**battery(agreement="TCA", subdivision=3))
     assert others["rule_applied"] == "CTH or MAXNOM 50 % EXW" and others["originating"]
     packs = evaluate_origin(**battery(agreement="TCA", subdivision=1))
@@ -347,6 +350,16 @@ def test_evaluate_origin_asks_for_the_subdivision_when_there_are_several(rules):
     assert {"criteria", "tolerance_pct"}.isdisjoint(params["properties"])
     numbered = get_origin_rule(hs_code="850760", agreement="TCA")["rule_sets"]
     assert [rs["number"] for rs in numbered] == [1, 2, 3]
+
+
+def test_evaluate_origin_tolerates_a_lone_operation_and_rejects_double_counting(rules):
+    registry = default_registry()
+    lone = registry.call("evaluate_origin", battery(operations="fabricacion"))
+    assert lone.ok and lone.result["originating"]
+    listed_three_times = battery()  # 3 x (95 + 20) = 345 EUR of materials, 250 EUR ex-works
+    listed_three_times["materials"] = listed_three_times["materials"] * 3
+    doubled = registry.call("evaluate_origin", listed_three_times)
+    assert not doubled.ok and "add up to 345.00 EUR" in doubled.error
 
 
 def test_evaluate_origin_with_a_rule_it_cannot_read(rules, monkeypatch):
