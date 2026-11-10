@@ -25,11 +25,14 @@ hf auth login            # solo si los repositorios son privados
 hf download enriquefbrt/arca-sft-lora   --local-dir rlm/weights/sft_lora
 hf download enriquefbrt/arca-grpo-lora  --local-dir rlm/weights/final_rlm_lora
 hf download enriquefbrt/arca-grpo2-lora --local-dir rlm/weights/grpo_pps3
+# fase 2: el SFT de tool use (sigue entrenando grpo_pps3)
+hf download enriquefbrt/arca-tools-sft-lora       --local-dir tool_use/weights/sft_nothink
+hf download enriquefbrt/arca-tools-sft-think-lora --local-dir tool_use/weights/sft_think
 ```
 
-Solo `grpo_pps3` hace falta para el endpoint; los otros dos, para repetir la evaluación y las
-curvas. Con eso se puede saltar directamente a [Evaluación](#5-evaluación) o a
-[Endpoint](#7-endpoint).
+Para los endpoints solo hacen falta `grpo_pps3` (`/reasoning`) y `sft_nothink` (`/tools`); los
+demás, para repetir las evaluaciones y las curvas. Con eso se puede saltar directamente a
+[Evaluación](#5-evaluación) o a [Endpoint](#7-endpoint).
 
 ## Camino completo
 
@@ -153,7 +156,7 @@ con qué es cada modelo; el resto sale tal cual de estos comandos.
 ### 7. Endpoint
 
 ```bash
-cp -n .env.example .env  # si no tenéis .env; ya apunta ARCA_RLM_ADAPTER a rlm/weights/grpo_pps3
+cp -n .env.example .env  # si no tenéis .env; ya apunta a grpo_pps3 (fase 1) y a sft_nothink (fase 2)
 uv run arca-api          # o: docker compose up api
 ```
 

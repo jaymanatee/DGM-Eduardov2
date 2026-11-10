@@ -36,7 +36,7 @@ smoke-dry: ## Prueba de instalación en CPU con un modelo diminuto (~1 min)
 	$(UV) run arca-smoke --dry-run
 
 api: ## Levanta la API en local con recarga automática
-	$(UV) run uvicorn api.app:app --host 0.0.0.0 --port 8000 --reload
+	$(UV) run uvicorn api.app:app --host 0.0.0.0 --port 8000 --reload $$(test -f .env && echo --env-file .env)
 
 enunciado: ## Recompila docs/enunciado.pdf a partir del .tex
 	cd docs && pdflatex -interaction=nonstopmode enunciado.tex >/dev/null

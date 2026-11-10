@@ -129,7 +129,14 @@ def agent(request: AgentRequest):
 
 
 def main() -> None:
-    """Entry point for ``uv run arca-api``."""
+    """Entry point for ``uv run arca-api``.
+
+    Reads ``.env`` first, as docker compose does with ``env_file``; variables already set in the
+    shell win. Without it ``uv run arca-api`` served the base models whatever ``.env`` said.
+    """
+    from dotenv import load_dotenv
+
+    load_dotenv(override=False)
     uvicorn.run("api.app:app", host="0.0.0.0", port=int(env("ARCA_API_PORT", "8000")))
 
 
