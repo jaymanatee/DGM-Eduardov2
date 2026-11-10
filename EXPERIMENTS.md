@@ -1598,3 +1598,53 @@ Volvimos a puntuar la v4 con estos criterios, solo para comparar.
 - **El error de la acción rechazada dice ahora "no statement was issued".**
 - **Los fallos que quedan son de comprensión del modelo,** no de las herramientas: leer subdivisiones y
   separar producto de materiales. Es lo que probaremos con SFT para tool use.
+
+### 2026-11-10 · Fase 2 · SFT para tool use (1): catálogo de productos, reglas en disco y dos fallos del parser
+
+**Qué queríamos saber.**
+- Si el generador de la fase 1 sirve para las trayectorias del SFT.
+- Si las reglas oficiales dan bastantes casos de elegir subdivisión, que es lo que el modelo hace
+  peor.
+- Cómo usa las herramientas el modelo de la fase 1 antes de ajustarlo.
+
+**Qué hicimos.**
+- **Probamos el modelo de la fase 1** (`grpo_pps3`) en 3 casos del banco, con y sin thinking.
+- **Catálogo nuevo** en `tool_use/sft/catalog.py`: 71 productos con sus materiales. Ningún producto
+  comparte partida con uno del banco (un test lo comprueba).
+- **Descarga única de los datos** con `uv run python -m tool_use.sft.fetch`:
+  - las reglas de los 71 productos en los 4 acuerdos, recortadas a lo que lee el parser (1,4 MB);
+  - las series mensuales del BCE desde 2024.
+- **Escaneo de 120 códigos más** para buscar reglas con varias subdivisiones.
+
+**Qué pasó.**
+- **El modelo de la fase 1 usa peor las herramientas que el base.**
+  - Sin thinking, explica cómo llamaría a la herramienta en vez de llamarla.
+  - Con thinking, en `chain-06` calcula el origen por su cuenta, que es para lo que lo entrenamos.
+  - Los dos se inventan qué es el REX ("Registre d'Exploitation"). Eso es conocimiento, y le toca
+    al RAG de la fase 3.
+- **El generador de la fase 1 no sirve:** tiene 6 productos y 4 están en el banco.
+- **Subdivisiones:** en maquinaria casi no hay. Aparecen en textiles, alimentos, vehículos y
+  vidrio. Los mejores casos son los de un mismo código con productos distintos (chocolate blanco o
+  caramelos, híbrido enchufable o no, bordado o liso). Anotamos a mano la subdivisión correcta y
+  dejamos fuera las dudosas: cupos de CETA, conjuntos solapados y subdivisiones sin texto.
+  Quedan 29 elecciones en 19 reglas. La buena es la primera en 12 y otra en 17. En 24 de las 29, la
+  subdivisión elegida acaba en "revisar a mano".
+- **Dos fallos del parser de reglas** (`parse_rules_of_origin`):
+  - **Caducidad por entrada entera:** la regla del TCA para híbridos enchufables y eléctricos
+    (8702-8704) es una sola entrada con dos párrafos, el vigente y uno "(until 31 December 2023)".
+    El parser la descartaba entera.
+  - **Condiciones leídas como alternativas sueltas:** 43 criterios salían de textos con "provided
+    that", límites de peso o "must be originating". Por ejemplo, "cambio desde la 8431 siempre que
+    sus materiales no superen el 50 %" se leía como MAXNOM 50 % sobre todo, y en la 1704.90 "(ii)
+    el azúcar no supera el 30 %" se leía como MAXNOM 30 %. Alguno podía dar un "originario" falso.
+
+**Qué concluimos.**
+- **Arreglamos el parser:**
+  - la caducidad se mira por párrafos;
+  - una condición que el motor no comprueba deja la regla para revisar a mano, en vez de leerla a
+    medias.
+- **Las reglas de los productos del banco no cambian** (comprobado), y hay tests con la regla real
+  de vehículos.
+- **El SFT tendrá que quitarle al modelo de la fase 1 la costumbre de calcular el origen él mismo.**
+- **Para elegir subdivisión hay pocos ejemplos que acaben en veredicto** (5 de 29). Lo tendremos en
+  cuenta al ver los resultados de `chain-06`.

@@ -328,12 +328,33 @@ def _expired(text: str, today: date) -> bool:
     return bool(match) and datetime.strptime(match.group(1), "%d %B %Y").date() < today
 
 
+def _in_force(text: str, today: date) -> str:
+    """The paragraphs of a rule that still apply. One API entry may hold the current rule and
+    an expired transitional one ('... (until 31 December 2023)'): only the latter goes."""
+    paragraphs = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
+    return "\n\n".join(p for p in paragraphs if not _expired(p, today))
+
+
+# Conditions the engine cannot check: a limit on some materials only ("provided that the
+# value of non-originating materials of heading 8431 does not exceed 50 %"), weights, or parts
+# that must be originating. Read as a plain criterion they would be wrong, sometimes in the
+# exporter's favour, so the rule goes to not_machine_readable and is checked by hand.
+_UNCHECKABLE = ("provided that", "must be originating", "weight")
+# A limit on the materials of given headings or chapters only, or one item, "(ii) ...", of a
+# list of conditions that all apply (the API sends each item as a rule of its own).
+_PARTIAL = re.compile(
+    r"materials of (?:sub)?headings? \d|materials of chapters? \d|^\(?[ivx]{1,4}\)|^- [a-z]\)"
+)
+
+
 def _criterion(text: str, rule_class: list[str]) -> dict[str, Any] | None:
     """One API rule -> a Criterion for evaluate_origin, or None if it does not fit the engine."""
     if len(rule_class) != 1 or rule_class[0] not in CRITERIA_PRIORITY:
         return None
     kind, lowered = rule_class[0], text.lower()
     if "same heading" in lowered:  # a cap on same-heading materials only, not a MaxNOM
+        return None
+    if any(condition in lowered for condition in _UNCHECKABLE) or _PARTIAL.search(lowered):
         return None
     criterion: dict[str, Any] = {"kind": kind}
     if kind in VALUE_CRITERIA:
@@ -369,7 +390,8 @@ def parse_rules_of_origin(
             included[(r["type"], r["id"])]["attributes"]
             for r in rule_set["relationships"]["rules"]["data"]
         ]
-        rules = [r for r in rules if not _expired(r["rule"], today)]
+        rules = [{**r, "rule": _in_force(r["rule"], today)} for r in rules]
+        rules = [r for r in rules if r["rule"]]
         texts = [_clean(r["rule"]) for r in rules]
         parsed = [_criterion(t, r["rule_class"]) for t, r in zip(texts, rules, strict=True)]
         entry: dict[str, Any] = {

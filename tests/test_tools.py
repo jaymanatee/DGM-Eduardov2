@@ -105,6 +105,42 @@ def test_origin_rule_transitional_rules_apply_before_their_end_date():
     assert {"kind": "MAXNOM", "threshold_pct": 70, "basis": "EXW"} in packs["criteria"]
 
 
+def test_an_expired_paragraph_does_not_take_the_current_rule_with_it():
+    # One API entry: "45 % ... and battery packs must be originating" and, after a blank line,
+    # "60 % ... (until 31 December 2023)". Only the second paragraph has expired.
+    payload = json.loads((FIXTURES / "roo_870360_FR.json").read_text(encoding="utf-8"))
+    plug_in, others = parse_rules_of_origin(payload, "TCA", "870360", date(2026, 11, 10))[
+        "rule_sets"
+    ]
+    [text] = plug_in["rule_text"]
+    assert "45%" in text and "until" not in text
+    # The battery condition is beyond the engine: by hand, never a plain MaxNOM 45 %.
+    assert plug_in["criteria"] == [] and plug_in["not_machine_readable"] == [text]
+    assert others["criteria"] == [{"kind": "MAXNOM", "threshold_pct": 45, "basis": "EXW"}]
+    old = parse_rules_of_origin(payload, "TCA", "870360", date(2023, 6, 1))["rule_sets"][0]
+    assert "60%" in old["rule_text"][0]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "A change from heading 8431, provided that the value of non-originating materials of "
+        "heading 8431 does not exceed 50% of the ex-works price of the product.",
+        "(ii) the value of non-originating materials of heading 1701 and heading 1702 used does "
+        "not exceed 30% of the ex-works price of the product.",
+        "A maximum of 40% of the ex-works price, and the net weight of sugar does not exceed 40%.",
+    ],
+)
+def test_conditions_the_engine_cannot_check_are_left_to_a_human(text):
+    assert tools._criterion(text, ["MAXNOM"]) is None
+    plain = "A maximum of 50% of the ex-works price (EXW) is made up of non-originating parts."
+    assert tools._criterion(plain, ["MAXNOM"]) == {
+        "kind": "MAXNOM",
+        "threshold_pct": 50,
+        "basis": "EXW",
+    }
+
+
 def test_origin_rule_japan_ignores_cptpp_and_reads_fob(http):
     http.response = FakeResponse(roo("JP"))
     result = get_origin_rule(hs_code="850760", agreement="UE-JP")
