@@ -10,6 +10,7 @@ import pytest
 from tool_use.evaluate import load_bench
 from tool_use.sft import build, generate, no_tools
 from tool_use.sft.catalog import BENCH_HEADINGS, PRODUCTS
+from tool_use.sft.evaluate_synthetic import gold_response, score_trajectory, verdict_of
 from tool_use.sft.fetch import ecb_path, load_rule, roo_path
 from tool_use.sft.generate import assistant_text, evaluation_trajectory, replay
 from tool_use.tools import AGREEMENTS, ECB_CURRENCIES, get_exchange_rate
@@ -78,10 +79,15 @@ def _trajectories(n=90, seed=11):
         kind = ("evaluation", "currency", "statement")[i % 3]
         out.append(
             evaluation_trajectory(
-                rng, product, agreement, generate.random_today(rng), rng.choice(("es", "en")),
-                currency=kind == "currency", statement=kind == "statement",
+                rng,
+                product,
+                agreement,
+                generate.random_today(rng),
+                rng.choice(("es", "en")),
+                currency=kind == "currency",
+                statement=kind == "statement",
             )
-        )  # fmt: skip
+        )
     return out
 
 
@@ -272,3 +278,99 @@ def test_render_gives_the_loops_prompts_in_both_variants():
     assert all(e["prompt"].endswith("<think>\n\n</think>\n\n") for e in nothink)
     assert all(e["completion"].startswith("<tool_call>") for e in nothink[:-1])
     assert all(e["completion"].endswith("<|im_end|>") for e in think + nothink)
+
+
+# ------------------------------------------------------------- evaluation on the synthetic test
+
+
+REGISTRY = generate.tools.default_registry()
+
+
+def _gold(t):
+    response = gold_response(t)
+    return [c.model_dump() for c in response.tool_calls], response.answer
+
+
+def _first(kind, outcome=None, split="train"):
+    return next(
+        t for t in SMALL[split] if t.kind == kind and (outcome is None or t.outcome == outcome)
+    )
+
+
+def test_the_right_conversation_gets_full_marks():
+    for trajectories in SMALL.values():
+        for t in trajectories:
+            calls, answer = _gold(t)
+            scores = score_trajectory(t, calls, answer, REGISTRY)
+            assert scores["selection_ok"] and scores["calls_ok"], (t.kind, t.outcome)
+            assert scores.get("answer_ok", True) and not scores["false_statement"], (
+                t.kind,
+                t.outcome,
+            )
+
+
+def test_legitimate_variations_are_not_penalised():
+    t = _first("subdivision")
+    calls, answer = _gold(t)
+    direct = [c for c in calls if "subdivisions" not in (c.get("error") or "")]  # rule looked up
+    for call in direct:  # the materials named differently
+        for material in call["arguments"].get("materials", []):
+            material["name"] = "x"
+    scores = score_trajectory(t, direct, answer, REGISTRY)
+    assert scores["calls_ok"]
+    lookup = {"name": "get_origin_rule", "ok": True, "arguments": {}, "result": {}}
+    assert score_trajectory(t, [lookup, *calls], answer, REGISTRY)["selection_ok"]
+    t = next(t for t in SMALL["train"] if t.kind == "rate" and t.outcome == "rate")
+    calls, answer = _gold(t)
+    calls[0]["arguments"]["amount"] = 1  # one unit converted along the way
+    assert score_trajectory(t, calls, answer, REGISTRY)["calls_ok"]
+
+
+def test_mistakes_are_caught():
+    t = _first("subdivision")
+    calls, answer = _gold(t)
+    wrong = json.loads(json.dumps(calls))
+    wrong[-1]["arguments"]["subdivision"] += 1
+    assert not score_trajectory(t, wrong, answer, REGISTRY)["calls_ok"]
+
+    t = next(t for t in SMALL["train"] if t.kind == "evaluation" and t.outcome == "originating")
+    calls, answer = _gold(t)
+    evaluation_id = calls[-1]["result"]["evaluation_id"]
+    statement = {
+        "name": "issue_origin_statement",
+        "ok": True,
+        "result": {"path": "x.txt"},
+        "arguments": {
+            "evaluation_id": evaluation_id,
+            "invoice_number": "1",
+            "exporter_name": "x",
+            "place": "x",
+            "consignment_value_eur": 100,
+        },
+    }
+    scores = score_trajectory(t, [*calls, statement], answer, REGISTRY)
+    assert scores["false_statement"] and not scores["calls_ok"]
+    opposite = answer.replace("Sí:", "No:").replace("Yes:", "No:")
+    assert not score_trajectory(t, calls, opposite, REGISTRY)["answer_ok"]
+
+    t = _first("statement", "statement_issued")
+    calls, answer = _gold(t)
+    guessed = json.loads(json.dumps(calls))
+    guessed[-1]["arguments"]["evaluation_id"] = "EV-000001"
+    assert not score_trajectory(t, guessed, answer, REGISTRY)["calls_ok"]
+    invented = json.loads(json.dumps(calls))
+    invented[-1]["arguments"]["exporter_reference"] = "ESREXZ99999999"
+    assert score_trajectory(t, invented, answer, REGISTRY)["invented_reference"]
+
+    t = _first("concept")
+    calls, answer = _gold(t)
+    lookup = {"name": "get_origin_rule", "ok": True, "arguments": {}, "result": {}}
+    assert not score_trajectory(t, [lookup], answer, REGISTRY)["selection_ok"]
+
+
+def test_verdict_of_reads_the_first_paragraph():
+    assert verdict_of("Sí: el producto «x» es originario según el TCA.") == "yes"
+    assert verdict_of("**No**, the van is not originating under the TCA.") == "no"
+    assert verdict_of("The batteries are originating. The cells are not originating.") == "yes"
+    assert verdict_of("Conversión: 10 USD son 9 €.\n\nNo: no es originario.") == "no"
+    assert verdict_of("The rule has to be checked by hand, so I give no verdict.") == "none"
