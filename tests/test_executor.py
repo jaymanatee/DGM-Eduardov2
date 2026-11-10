@@ -209,9 +209,16 @@ def test_an_action_is_only_run_alone():
     assert all(r.ok for r in parallel.run("x").tool_calls)
 
 
-def test_thinking_gets_more_tokens():
-    assert ToolLoop(registry=ToolRegistry()).max_new_tokens == 1024
-    assert ToolLoop(registry=ToolRegistry(), thinking=True).max_new_tokens == 4096
+def test_thinking_is_on_by_default_and_gets_more_tokens():
+    assert ToolLoop(registry=ToolRegistry()).max_new_tokens == 4096
+    assert ToolLoop(registry=ToolRegistry(), thinking=False).max_new_tokens == 1024
     assert (
         ToolLoop(registry=ToolRegistry(), thinking=True, max_new_tokens=2048).max_new_tokens == 2048
     )
+
+
+def test_an_unclosed_think_is_not_shown_to_the_user():
+    loop = ScriptedLoop(["<think>\nThe statement was issued: F-1.txt."])
+    assert loop.run("x").answer == "The statement was issued: F-1.txt."
+    closed = ScriptedLoop(["<think>\nplan\n</think>\n\nDone."])
+    assert closed.run("x").answer == "Done."

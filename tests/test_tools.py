@@ -55,6 +55,7 @@ def http(monkeypatch):
         return item
 
     Http.calls, Http.sequence, Http.pauses = [], [], []
+    tools._rule_of_origin.cache_clear()
     monkeypatch.setattr(tools.requests, "get", fake_get)
     monkeypatch.setattr(tools.time, "sleep", Http.pauses.append)
     return Http
@@ -62,6 +63,18 @@ def http(monkeypatch):
 
 def roo(country):
     return json.loads((FIXTURES / f"roo_850760_{country}.json").read_text(encoding="utf-8"))
+
+
+@pytest.fixture
+def rules(http):
+    """The rule API answers with the recorded 850760 rule of whichever agreement is asked."""
+
+    def by_url(url, params=None, timeout=None):  # .../850760/JP -> roo_850760_JP.json
+        http.calls.append((url, params))
+        return FakeResponse(roo(url.rsplit("/", 1)[-1]))
+
+    tools.requests.get = by_url  # the http fixture's monkeypatch restores requests.get
+    return http
 
 
 # ------------------------------------------------------------------------ get_origin_rule
@@ -128,6 +141,15 @@ def test_origin_rule_errors_reach_the_model(http):
     no_rule = registry.call("get_origin_rule", {"hs_code": "999999", "agreement": "UE-KR"})
     assert not no_rule.ok and "no UE-KR rules" in no_rule.error
     assert len(http.calls) == 1  # invalid arguments never reach the API
+
+
+def test_codes_lose_a_prefix_and_rules_are_cached(rules):
+    first = get_origin_rule(hs_code="SA 8507.60", agreement="UE-JP")
+    again = get_origin_rule(hs_code="HS850760", agreement="UE-JP")
+    assert first == again and first["hs_code"] == "850760"
+    assert len(rules.calls) == 1  # the second lookup and evaluate_origin's check use the cache
+    first["rule_sets"].clear()  # what the model gets is a copy: the cache stays intact
+    assert get_origin_rule(hs_code="850760", agreement="UE-JP")["rule_sets"]
 
 
 # ---------------------------------------------------------------------- get_exchange_rate
@@ -263,16 +285,16 @@ def tool_arguments(params):
     }
 
 
-def test_evaluate_origin_matches_every_phase1_test_problem():
+def test_engine_matches_every_phase1_test_problem():
+    """assess_origin, the engine behind evaluate_origin: phase 1 rules are not the official
+    ones, so the tool itself would refuse them (that check is tested below)."""
     rows = [json.loads(line) for line in (ROOT / "rlm/data/test.jsonl").read_text().splitlines()]
-    registry = default_registry()
     for row in rows:
-        record = registry.call("evaluate_origin", tool_arguments(row["params"]))
-        assert record.ok, record.error
+        result = tools.assess_origin(**tool_arguments(row["params"]))
         expected = json.loads(row["answer"])
-        assert record.result["originating"] == expected["originario"]
-        assert record.result["criterion"] == expected["criterio"]
-        assert record.result["pct_non_originating"] == expected["pct_no_originario"]
+        assert result["originating"] == expected["originario"]
+        assert result["criterion"] == expected["criterio"]
+        assert result["pct_non_originating"] == expected["pct_no_originario"]
     assert len(rows) == 200
 
 
@@ -291,7 +313,7 @@ def battery(**overrides):
     return arguments | overrides
 
 
-def test_evaluate_origin_uses_the_agreement_tolerance_and_explains():
+def test_evaluate_origin_uses_the_agreement_tolerance_and_explains(rules):
     result = evaluate_origin(**battery())
     # Cells are in the same heading: CTH fails (95 > 10 % of 250) but MaxNOM 38 % <= 50 % passes.
     assert result["originating"] and result["criterion"] == "MAXNOM"
@@ -302,7 +324,7 @@ def test_evaluate_origin_uses_the_agreement_tolerance_and_explains():
     assert len(result["trace"]) == 4
 
 
-def test_evaluate_origin_insufficient_operations_and_bad_criteria():
+def test_evaluate_origin_insufficient_operations_and_bad_criteria(rules):
     assert not evaluate_origin(**battery(operations=["embalaje"]))["originating"]
     registry = default_registry()
     no_threshold = registry.call("evaluate_origin", battery(criteria=[{"kind": "MAXNOM"}]))
@@ -311,6 +333,36 @@ def test_evaluate_origin_insufficient_operations_and_bad_criteria():
         "evaluate_origin", battery(criteria=[{"kind": "RVC", "threshold_pct": 55, "basis": "FOB"}])
     )
     assert not fob.ok and "fob_price_eur" in fob.error
+
+
+def test_evaluate_origin_refuses_criteria_that_are_not_the_rule(rules):
+    registry = default_registry()
+    # The v2 failure: invented RVC 30 % for the tables. Here: same idea on the battery.
+    invented = registry.call(
+        "evaluate_origin", battery(criteria=[{"kind": "RVC", "threshold_pct": 30}])
+    )
+    assert not invented.ok and "not the rule of origin of 850760 under UE-JP" in invented.error
+    assert '"threshold_pct": 55, "basis": "FOB"' in invented.error  # the right ones, to copy
+    # MaxNOM 50 is Japan's; Korea's is 45.
+    korea = registry.call("evaluate_origin", battery(agreement="UE-KR"))
+    assert not korea.ok and "MAXNOM" in korea.error
+    # A subset of one rule set is fine; mixing rule sets of the TCA (30 % packs, 50 % others)
+    # is not: it would be a rule that does not exist.
+    assert evaluate_origin(**battery(agreement="TCA", criteria=[{"kind": "CTH"}]))
+    mixed = [{"kind": "CTH"}, {"kind": "MAXNOM", "threshold_pct": 30}]
+    assert not registry.call("evaluate_origin", battery(agreement="TCA", criteria=mixed)).ok
+    # The tolerance is the agreement's: the model cannot set it any more.
+    params = registry.tools["evaluate_origin"].definition["function"]["parameters"]
+    assert "tolerance_pct" not in params["properties"]
+
+
+def test_evaluate_origin_with_a_rule_it_cannot_read(rules, monkeypatch):
+    unreadable = {
+        "rule_sets": [{"criteria": [], "not_machine_readable": ["Knitting and making-up"]}]
+    }
+    monkeypatch.setattr(tools, "_rule_of_origin", lambda hs_code, agreement: unreadable)
+    record = default_registry().call("evaluate_origin", battery(agreement="CETA"))
+    assert not record.ok and "checked by hand" in record.error and "Knitting" in record.error
 
 
 # ----------------------------------------------------------------- issue_origin_statement
@@ -333,7 +385,7 @@ def test_statement_text_is_the_annex_sentence():
     assert "Canada/EU preferential origin" in render_statement("CETA", "", "A", "B", date.today())
 
 
-def test_issue_statement_writes_the_file_once(out_dir):
+def test_issue_statement_writes_the_file_once(out_dir, rules):
     evaluation = evaluate_origin(**battery())
     arguments = {
         "evaluation_id": evaluation["evaluation_id"],
@@ -353,9 +405,10 @@ def test_issue_statement_writes_the_file_once(out_dir):
         issue_origin_statement(**arguments)
 
 
-def test_issue_statement_refusals(out_dir):
+def test_issue_statement_refusals(out_dir, rules):
     not_originating = evaluate_origin(**battery(operations=["etiquetado"]))["evaluation_id"]
-    originating = evaluate_origin(**battery(agreement="UE-KR"))["evaluation_id"]
+    korea = [{"kind": "CTH"}, {"kind": "MAXNOM", "threshold_pct": 45}]
+    originating = evaluate_origin(**battery(agreement="UE-KR", criteria=korea))["evaluation_id"]
     common = {"invoice_number": "F-1", "exporter_name": "A", "place": "B"}
     with pytest.raises(ValueError, match="NOT originating"):
         issue_origin_statement(evaluation_id=not_originating, consignment_value_eur=100, **common)

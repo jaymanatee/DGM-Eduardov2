@@ -23,7 +23,8 @@ that times out, an action that was not confirmed. The record also lands in
 * ``ARCA_TOOLS_ADAPTER``  optional LoRA adapter, merged into the model as in phase 1
 * ``ARCA_TOOLS_PROMPT``   ``slides`` (default: the template below, written by hand) or
                           ``native`` (Qwen's chat template renders the tools itself)
-* ``ARCA_TOOLS_THINKING`` ``1`` to let Qwen3 think before each turn (default ``0``)
+* ``ARCA_TOOLS_THINKING`` ``1`` (default) lets Qwen3 think before each turn, ``0`` turns it
+                          off: on the DGX, 42 % of chains right with it, 25 % without
 * ``ARCA_TOOLS_MAX_NEW_TOKENS`` per generation (default 1024, or 4096 when thinking)
 * ``ARCA_TOOLS_CONFIRM``  ``auto`` (default) or ``deny``: what happens with tools registered
                           with ``requires_confirmation`` (see ``CONFIRMATION_POLICIES``)
@@ -82,6 +83,8 @@ number or an id. If something you need is missing, ask the user.
 Several <tool_call> blocks in one message are only for independent lookups. When a call
 needs the result of another one (the criteria of a rule, an evaluation_id), wait for that
 result and make the call in your next message.
+Never tell the user that something was done (a statement issued, a number checked) unless
+the tool result says so; if a tool returned an error, say what failed.
 Questions about general concepts can be answered directly, without tools. Answer in the
 language of the user."""
 
@@ -120,6 +123,19 @@ def _not_confirmed(call: ToolCall) -> ToolCallRecord:
     )
 
 
+def _final_text(text: str) -> str:
+    """The answer without a <think> the model opened and never closed.
+
+    With thinking on, the model sometimes writes its final answer inside an unclosed <think>
+    (2 of 30 cases on the DGX). The parser only removes complete blocks, so the user would
+    get a stray tag; what follows it is the answer.
+    """
+    stripped = text.lstrip()
+    if stripped.startswith("<think>") and "</think>" not in stripped:
+        return stripped.removeprefix("<think>").strip()
+    return text
+
+
 def _not_alone(call: ToolCall) -> ToolCallRecord:
     return ToolCallRecord(
         name=call.name,
@@ -145,7 +161,7 @@ class ToolLoop:
         model_id: str | None = None,
         adapter_path: str | None = None,
         prompt_style: str = "slides",
-        thinking: bool = False,
+        thinking: bool = True,
         max_new_tokens: int | None = None,
         confirm: ConfirmFn | None = None,
     ):
@@ -179,7 +195,7 @@ class ToolLoop:
             model_id=model_id,
             adapter_path=os.environ.get("ARCA_TOOLS_ADAPTER") or None,
             prompt_style=os.environ.get("ARCA_TOOLS_PROMPT", "slides"),
-            thinking=os.environ.get("ARCA_TOOLS_THINKING", "0") == "1",
+            thinking=os.environ.get("ARCA_TOOLS_THINKING", "1") != "0",
             max_new_tokens=int(os.environ.get("ARCA_TOOLS_MAX_NEW_TOKENS") or 0) or None,
             confirm=CONFIRMATION_POLICIES[policy],
         )
@@ -354,7 +370,7 @@ class ToolLoop:
             messages.append(message)
             if not use_tools or not parsed.tool_calls:
                 return ToolsResponse(
-                    answer=parsed.text, tool_calls=records, turns=turn, model=self.name
+                    answer=_final_text(parsed.text), tool_calls=records, turns=turn, model=self.name
                 )
             # Malformed calls count too: the model has to hear what was wrong to fix it.
             for record in self.execute_all(parsed.tool_calls):
@@ -363,7 +379,7 @@ class ToolLoop:
         # Out of turns: whatever text came with the last calls, flagged as unfinished.
         flag = f"[stopped after {max_turns} turns without a final answer]"
         return ToolsResponse(
-            answer=f"{flag} {parsed.text}".strip(),
+            answer=f"{flag} {_final_text(parsed.text)}".strip(),
             tool_calls=records,
             turns=max_turns,
             model=self.name,

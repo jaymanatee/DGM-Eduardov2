@@ -21,8 +21,11 @@ No ``from __future__ import annotations`` here: ``registry.py`` builds the Pydan
 custom types below (``HsCode``, ``BomLine``...).
 """
 
+import copy
 import csv
+import functools
 import io
+import json
 import os
 import re
 import secrets
@@ -145,12 +148,19 @@ def general_tolerance_pct(agreement: str, hs_code: str) -> int | None:
 # --------------------------------------------------------------------------- argument types
 
 
+_CODE_PREFIX = re.compile(r"^\s*(?:HS|SA|NC|CN|HTS|TARIC)(?=[\s.:\-]*\d)[\s.:\-]*", re.IGNORECASE)
+
+
 def _hs6(value: Any) -> Any:
-    """'8507.60', '8507 60 00' or 85076000 -> '850760'. Anything else is left for the pattern."""
+    """'8507.60', '8507 60 00', 'SA 8507.60' or 85076000 -> '850760'. Else left for the pattern.
+
+    The prefix matters: in the thinking run the model copied 'SA 9403.40' as 'SA940340' and
+    repeated the failing call four times.
+    """
     if isinstance(value, int):
         value = str(value)
     if isinstance(value, str):
-        digits = re.sub(r"[\s.\-]", "", value)
+        digits = re.sub(r"[\s.\-]", "", _CODE_PREFIX.sub("", value))
         if digits.isdigit() and 6 <= len(digits) <= 10:
             return digits[:6]
         return digits
@@ -417,6 +427,12 @@ def get_origin_rule(hs_code: HsCode, agreement: Agreement) -> dict:
             to 6 digits).
         agreement: TCA (United Kingdom), UE-JP (Japan), UE-KR (South Korea) or CETA (Canada).
     """
+    return copy.deepcopy(_rule_of_origin(hs_code, agreement))
+
+
+@functools.lru_cache(maxsize=512)
+def _rule_of_origin(hs_code: str, agreement: str) -> dict:
+    """The parsed rule, cached: evaluate_origin checks its criteria against the same answer."""
     info = AGREEMENTS[agreement]
     response = _http_get(UK_TARIFF_ROO.format(code=hs_code, country=info.api_country))
     return parse_rules_of_origin(response.json(), agreement, hs_code)
@@ -526,38 +542,7 @@ def check_vat_number(vat_number: VatNumber) -> dict:
 _EVALUATIONS: dict[str, dict[str, Any]] = {}
 
 
-@tool
-def evaluate_origin(
-    agreement: Agreement,
-    product_hs_code: HsCode,
-    exw_price_eur: Annotated[float, Field(gt=0)],
-    materials: Annotated[list[BomLine], Field(min_length=1)],
-    criteria: Annotated[list[Criterion], Field(min_length=1)],
-    operations: list[Operation] | None = None,
-    fob_price_eur: Annotated[float, Field(gt=0)] | None = None,
-    tolerance_pct: Annotated[int, Field(ge=0, le=20)] | None = None,
-) -> dict:
-    """Decide whether a product is originating under a rule of origin, material by material.
-
-    Call it only once get_origin_rule has returned, in a later message, never in the same
-    one: 'criteria' must be copied from that result, not written from memory. The product
-    is originating if it meets any one of them. Returns the verdict, the criteria met, the
-    % of non-originating materials over the ex-works price, a trace per material and an
-    evaluation_id for issue_origin_statement.
-
-    Args:
-        agreement: TCA (United Kingdom), UE-JP (Japan), UE-KR (South Korea) or CETA (Canada).
-        product_hs_code: HS code of the final product, 6 digits.
-        exw_price_eur: Ex-works price of the product, in euros.
-        materials: Bill of materials, one entry per material.
-        criteria: The 'criteria' list of the get_origin_rule result, copied as is (from the
-            rule set whose subdivision matches the product).
-        operations: What the producer does to the materials. Leave it out for normal
-            manufacturing. Only embalaje, etiquetado, pintado or limpieza never confer origin.
-        fob_price_eur: FOB price in euros. Needed only if a criterion uses FOB.
-        tolerance_pct: Leave it out: the agreement's general tolerance is applied. Set it
-            only if the user asks for a different one.
-    """
+def _check_shape(criteria: list[dict[str, Any]], fob_price_eur: float | None) -> None:
     for c in criteria:
         if c["kind"] in VALUE_CRITERIA and c["threshold_pct"] is None:
             raise ValueError(f"criterion {c['kind']} needs threshold_pct")
@@ -565,6 +550,63 @@ def evaluate_origin(
         c["kind"] in VALUE_CRITERIA and c["basis"] == "FOB" for c in criteria
     ):
         raise ValueError("a criterion is on a FOB basis: give fob_price_eur")
+
+
+def _criterion_key(c: dict[str, Any]) -> tuple:
+    """What makes two criteria the same rule: kind, and threshold and basis for value rules."""
+    value = c["kind"] in VALUE_CRITERIA
+    return (
+        c["kind"],
+        c.get("threshold_pct") if value else None,
+        c.get("basis", "EXW") if value else None,
+        tuple(sorted(re.sub(r"\D", "", h)[:4] for h in c.get("excluded_headings") or [])),
+    )
+
+
+def check_criteria(agreement: str, hs_code: str, criteria: list[dict[str, Any]]) -> None:
+    """Refuse criteria that are not in the official rule (any subset of one rule set is fine).
+
+    In the v2 benchmark the model passed criteria it made up ('RVC 30 % EXW') to
+    evaluate_origin, the engine found the goods originating, and a statement on origin went
+    out for tables that were not. A subset is accepted: fewer alternatives can only make a
+    product fail, never pass, where it should not.
+    """
+    rule = _rule_of_origin(hs_code, agreement)
+    official = [rs["criteria"] for rs in rule["rule_sets"] if rs["criteria"]]
+    if not official:
+        texts = "; ".join(t for rs in rule["rule_sets"] for t in rs["not_machine_readable"])
+        raise ValueError(
+            f"the rule of origin of {hs_code} under {agreement} has no criteria this tool can "
+            f"check ({texts[:300]}). It has to be checked by hand; tell the user."
+        )
+    given = {_criterion_key(c) for c in criteria}
+    if any(given <= {_criterion_key(c) for c in rs} for rs in official):
+        return
+    options = " or ".join(json.dumps(rs) for rs in official)
+    raise ValueError(
+        f"these criteria are not the rule of origin of {hs_code} under {agreement}. The rule "
+        f"is {options}. Call evaluate_origin again with one of these lists, copied as is."
+    )
+
+
+def assess_origin(
+    agreement: str,
+    product_hs_code: str,
+    exw_price_eur: float,
+    materials: list[dict[str, Any]],
+    criteria: list[dict[str, Any]],
+    operations: list[str] | None = None,
+    fob_price_eur: float | None = None,
+    tolerance_pct: int | None = None,
+) -> dict:
+    """The engine behind evaluate_origin, without the check against the official rule.
+
+    The phase 1 cross-check uses it directly: its problems come with the synthetic rules of
+    the problem generator, which are not the official ones, and with their own tolerance.
+    """
+    materials = [BomLine.model_validate(m).model_dump() for m in materials]
+    criteria = [Criterion.model_validate(c).model_dump() for c in criteria]
+    _check_shape(criteria, fob_price_eur)
     if tolerance_pct is None:
         tolerance_pct = general_tolerance_pct(agreement, product_hs_code) or 0
 
@@ -625,6 +667,43 @@ def evaluate_origin(
         "warnings": [name for name, raised in result.flags.items() if raised],
         "trace": result.trace,
     }
+
+
+@tool
+def evaluate_origin(
+    agreement: Agreement,
+    product_hs_code: HsCode,
+    exw_price_eur: Annotated[float, Field(gt=0)],
+    materials: Annotated[list[BomLine], Field(min_length=1)],
+    criteria: Annotated[list[Criterion], Field(min_length=1)],
+    operations: list[Operation] | None = None,
+    fob_price_eur: Annotated[float, Field(gt=0)] | None = None,
+) -> dict:
+    """Decide whether a product is originating under a rule of origin, material by material.
+
+    Call it only once get_origin_rule has returned, in a later message, never in the same
+    one: 'criteria' must be copied from that result. The tool checks them against the
+    official rule and refuses any that are not in it. The product is originating if it
+    meets any one of them; the agreement's general tolerance is applied. Returns the
+    verdict, the criteria met, the % of non-originating materials over the ex-works price,
+    a trace per material and an evaluation_id for issue_origin_statement.
+
+    Args:
+        agreement: TCA (United Kingdom), UE-JP (Japan), UE-KR (South Korea) or CETA (Canada).
+        product_hs_code: HS code of the final product, 6 digits.
+        exw_price_eur: Ex-works price of the product, in euros.
+        materials: Bill of materials, one entry per material.
+        criteria: The 'criteria' list of the get_origin_rule result, copied as is (from the
+            rule set whose subdivision matches the product).
+        operations: What the producer does to the materials. Leave it out for normal
+            manufacturing. Only embalaje, etiquetado, pintado or limpieza never confer origin.
+        fob_price_eur: FOB price in euros. Needed only if a criterion uses FOB.
+    """
+    _check_shape(criteria, fob_price_eur)
+    check_criteria(agreement, product_hs_code, criteria)
+    return assess_origin(
+        agreement, product_hs_code, exw_price_eur, materials, criteria, operations, fob_price_eur
+    )
 
 
 # ----------------------------------------------------------------- issue_origin_statement
