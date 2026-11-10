@@ -23,8 +23,9 @@ that times out, an action that was not confirmed. The record also lands in
 * ``ARCA_TOOLS_ADAPTER``  optional LoRA adapter, merged into the model as in phase 1
 * ``ARCA_TOOLS_PROMPT``   ``slides`` (default: the template below, written by hand) or
                           ``native`` (Qwen's chat template renders the tools itself)
-* ``ARCA_TOOLS_THINKING`` ``1`` (default) lets Qwen3 think before each turn, ``0`` turns it
-                          off: on the DGX, 42 % of chains right with it, 25 % without
+* ``ARCA_TOOLS_THINKING`` ``0`` (default) answers without thinking, ``1`` lets Qwen3 think
+                          before each turn: in benchmarks v4 and v5 on the DGX it was no better
+                          and 3.5 times slower, and made up more statements
 * ``ARCA_TOOLS_MAX_NEW_TOKENS`` per generation (default 1024, or 4096 when thinking)
 * ``ARCA_TOOLS_CONFIRM``  ``auto`` (default) or ``deny``: what happens with tools registered
                           with ``requires_confirmation`` (see ``CONFIRMATION_POLICIES``)
@@ -146,8 +147,8 @@ def _not_alone(call: ToolCall) -> ToolCallRecord:
         ok=False,
         error=(
             f"not executed: {call.name} has effects, so it must be the only call in its "
-            "message. Read the results of the other calls first, then call it alone if they "
-            "allow it."
+            "message. Nothing was done (no statement was issued): do not tell the user it was. "
+            "Read the results of the other calls first, then call it alone if they allow it."
         ),
     )
 
@@ -164,7 +165,7 @@ class ToolLoop:
         model_id: str | None = None,
         adapter_path: str | None = None,
         prompt_style: str = "slides",
-        thinking: bool = True,
+        thinking: bool = False,
         max_new_tokens: int | None = None,
         confirm: ConfirmFn | None = None,
     ):
@@ -198,7 +199,7 @@ class ToolLoop:
             model_id=model_id,
             adapter_path=os.environ.get("ARCA_TOOLS_ADAPTER") or None,
             prompt_style=os.environ.get("ARCA_TOOLS_PROMPT", "slides"),
-            thinking=os.environ.get("ARCA_TOOLS_THINKING", "1") != "0",
+            thinking=os.environ.get("ARCA_TOOLS_THINKING", "0") == "1",
             max_new_tokens=int(os.environ.get("ARCA_TOOLS_MAX_NEW_TOKENS") or 0) or None,
             confirm=CONFIRMATION_POLICIES[policy],
         )

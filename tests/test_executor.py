@@ -203,15 +203,21 @@ def test_an_action_is_only_run_alone():
     first, refused, alone = response.tool_calls
     assert first.ok and first.result == 2
     assert not refused.ok and "only call in its message" in refused.error
+    assert "no statement was issued" in refused.error  # so the model does not claim it was
     assert alone.ok and alone.result == "written: hi"
     # Lookups in parallel are still fine.
     parallel = ScriptedLoop([call("add", a=1, b=1) + call("add", a=2, b=2), "ok"])
     assert all(r.ok for r in parallel.run("x").tool_calls)
 
 
-def test_thinking_is_on_by_default_and_gets_more_tokens():
-    assert ToolLoop(registry=ToolRegistry()).max_new_tokens == 4096
-    assert ToolLoop(registry=ToolRegistry(), thinking=False).max_new_tokens == 1024
+def test_thinking_is_off_by_default_and_gets_more_tokens_when_on(monkeypatch):
+    assert ToolLoop(registry=ToolRegistry()).max_new_tokens == 1024
+    assert ToolLoop(registry=ToolRegistry(), thinking=True).max_new_tokens == 4096
+    monkeypatch.setenv("ARCA_TOOLS_MODEL", "Qwen/Qwen3-0.6B")
+    monkeypatch.delenv("ARCA_TOOLS_THINKING", raising=False)
+    assert ToolLoop.from_env().thinking is False
+    monkeypatch.setenv("ARCA_TOOLS_THINKING", "1")
+    assert ToolLoop.from_env().thinking is True
     assert (
         ToolLoop(registry=ToolRegistry(), thinking=True, max_new_tokens=2048).max_new_tokens == 2048
     )

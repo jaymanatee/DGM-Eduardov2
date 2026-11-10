@@ -1383,3 +1383,218 @@ Pasan los 6 tests del enunciado, más dos nuestros: la KL con `beta > 0` y la fr
 normalizadas por grupo, sin recorte ni KL. Los dos mecanismos están implementados y probados en
 `grpo_step.py`, pero para que el recorte importe habría que reutilizar cada lote de respuestas, cosa
 que no hicimos.
+
+### 2026-11-09 · Fase 2 · Cinco herramientas, el bucle a mano y un banco de 30 casos: primera pasada
+
+**Qué queríamos saber.** Si Qwen3-1.7B, sin ajustar, usa bien las cinco herramientas de origen, y
+cuánto gana frente a responder sin ellas.
+
+**Qué hicimos.**
+- **Herramientas** (`tool_use/tools.py`):
+  - `get_origin_rule`: regla oficial de la API de UK Trade Tariff;
+  - `get_exchange_rate`: media mensual del BCE;
+  - `check_vat_number`: VIES;
+  - `evaluate_origin`: el motor de la fase 1;
+  - `issue_origin_statement`: la acción, con `requires_confirmation`.
+- **El bucle de cinco pasos** en `tool_use/executor.py`, con llamadas en varios turnos y en
+  paralelo.
+- **Banco de 30 casos** en `tool_use/bench/cases.jsonl`, de siete tipos: consulta simple,
+  argumentos difíciles, llamadas en paralelo, cadenas, declaraciones y casos sin herramienta.
+  `evaluate.py` puntúa:
+  - la primera llamada;
+  - las llamadas esperadas en cualquier orden, que no aparezcan herramientas ni argumentos
+    prohibidos, y la respuesta final.
+- **Las dos pasadas** se hicieron en el portátil, sin thinking:
+  ```
+  uv run --extra train python -m tool_use.evaluate --bench tool_use/bench/cases.jsonl \
+      --out reports/phase2_v0_tools.json            # y --no-tools para phase2_v0_no_tools.json
+  ```
+
+**Qué pasó.**
+
+| | Sin herramientas | Con herramientas |
+|---|---|---|
+| Selección | 23 % (solo aciertan los casos sin herramienta) | 97 % |
+| Respuestas correctas | 6 % | 72 % |
+| Cadenas y paralelas | 0 % | 25 % |
+
+- **El modelo lanza la cadena entera en una sola generación:** la regla, la evaluación y la
+  declaración, todo a la vez. Como la declaración necesita el `evaluation_id` de una evaluación que
+  aún no ha ocurrido, se lo inventa.
+- **Hubo 4 declaraciones emitidas con el `EV-0001` adivinado,** una de ellas para mesas que no eran
+  originarias. Los ids eran secuenciales, así que el id inventado existía y correspondía a otra
+  evaluación.
+
+**Qué concluimos.** Con herramientas el modelo responde lo que sin ellas no puede (tipos de cambio,
+reglas oficiales, NIF). Pero la acción con efectos no está protegida: el modelo inventa lo que todavía
+no sabe. Lo primero es cerrar eso.
+
+### 2026-11-09 · Fase 2 · v1: descripciones y prompt más precisos
+
+**Qué queríamos saber.** Cuánto de lo anterior se arregla solo con mejores descripciones.
+
+**Qué hicimos.** Reescribir las descripciones:
+- `evaluation_id` dice "never guess one";
+- el REX, "never make one up";
+- el mes, "YYYY-MM", no una fecha.
+
+Al prompt le añadimos:
+- solo cuatro acuerdos;
+- no inventar valores;
+- varias llamadas en un mensaje solo si son independientes.
+
+Resultado en `reports/phase2_v1_tools.json`.
+
+**Qué pasó.**
+- Desaparecen el `EV-0001`, el REX inventado y las fechas completas en el mes.
+- La cadena sigue saliendo en un solo mensaje.
+- Aparecen 2 llamadas escritas como JSON sin las etiquetas `<tool_call>`, que el bucle no ejecuta.
+- Las respuestas correctas bajan del 72 % al 44 %. De los 5 casos que empeoran, 2 son caídas de las
+  APIs que la v0 no sufrió: el BCE agotó el tiempo de espera en `rate-01` y VIES falló en `args-03`.
+  Otro es una llamada sin etiquetas (`vat-02`). Los otros 2 son cadenas que se tuercen:
+  - `chain-03`: el modelo inventa un criterio RVC con umbral 0;
+  - `stmt-02`: busca las reglas de los tres materiales y evalúa con el código del motor (850140) como
+    si fuera el producto. Es el mismo fallo que reaparece en la v5.
+
+**Qué concluimos.** Las descripciones corrigen los formatos, pero no el orden de las llamadas. El
+orden hay que imponerlo desde el bucle y las herramientas, y las APIs necesitan reintentos.
+
+### 2026-11-10 · Fase 2 · v2: el bucle se protege solo; primera pasada en la DGX, con y sin thinking
+
+**Qué queríamos saber.** Si las protecciones en el código eliminan las declaraciones falsas, y si
+dejar pensar al modelo ayuda en las cadenas.
+
+**Qué hicimos.**
+- **Reintentos** ante caídas de red, 429 y 5xx, y ante VIES saturado.
+- **Llamadas sin etiquetas:** se recuperan, si nombran una herramienta registrada.
+- **`evaluation_id` aleatorios** (`EV-` más 6 hexadecimales).
+- **La acción solo se ejecuta si es la única llamada de su mensaje.** Si llega junto a otras, se
+  rechaza con un error que lo explica.
+
+Pasadas en la DGX con `ARCA_TOOLS_THINKING=0` y `=1`.
+
+**Qué pasó.**
+- **Sin thinking:** 25 % en cadenas, 61 % de respuestas correctas, 7,4 s por caso. Queda una
+  declaración falsa en `stmt-03`: el modelo pasó a `evaluate_origin` criterios inventados que hacían
+  originarias las mesas.
+- **Con thinking:** 42 % en cadenas, 78 % de respuestas correctas, 16,6 s por caso.
+
+**Qué concluimos.** Las protecciones del bucle funcionan. El agujero que queda es que `evaluate_origin`
+acepta la regla que le dé el modelo.
+
+### 2026-11-10 · Fase 2 · v3: los criterios se contrastan con la regla oficial
+
+**Qué queríamos saber.** Si rechazar los criterios que no están en la regla oficial elimina los
+veredictos falsos.
+
+**Qué hicimos.** `evaluate_origin` consulta la regla oficial y rechaza los criterios que no figuran en
+ella. Además activamos el thinking por defecto, por el 42 % de la v2 en cadenas.
+
+**Qué pasó.**
+- **Ninguna declaración falsa.**
+- **Sin thinking,** las cadenas suben al 50 %.
+- **Con thinking, las cadenas bajan al 25 %.** Tras el rechazo, el modelo calcula el veredicto a mano y
+  se equivoca: en `chain-01`, `02` y `05` dice "no originario" cuando sí lo es.
+
+**Qué concluimos.** Si el modelo tiene que escribir la regla, a veces la inventa, y cuando se la
+rechazan decide por su cuenta. Mejor que no la escriba.
+
+### 2026-11-10 · Fase 2 · v4: `evaluate_origin` aplica la regla oficial por sí misma
+
+**Qué queríamos saber.** Si quitar al modelo la regla de las manos arregla los veredictos.
+
+**Qué hicimos.**
+- **`evaluate_origin` pierde `criteria` y `tolerance_pct`.** Busca la regla (en caché) y aplica la
+  tolerancia del acuerdo.
+- **Si la regla tiene varias subdivisiones,** la herramienta las lista y pide `subdivision`.
+- **Alternativas sobre FOB sin precio FOB, y textos que el motor no sabe leer:** van a `not_checked`.
+  Si no queda ningún criterio legible, la herramienta pide revisión manual.
+- **Número REX:** se comprueba su formato.
+- **Prompt:** "el veredicto solo sale de `evaluate_origin`".
+- **Banco:** 31 casos. Añadimos `chain-06`: baterías de bicicleta al Reino Unido, cuya regla del TCA
+  tiene 3 subdivisiones (la buena es la 3, "others").
+
+La primera pasada guardada como v4 (`d32fd1f`) se hizo, por error, con el código de la v3, porque el
+commit de la v4 no se había subido. La repetimos (`32c3f30`). Ese error sirvió como experimento: el
+mismo código y el mismo banco, ejecutados dos veces, dieron llamadas y respuestas idénticas en solo
+6 de 30 casos (sin thinking) y 8 de 30 (con thinking). Pequeñas diferencias de estado, como los ids
+aleatorios que vuelven al modelo y los tiempos de las APIs, cambian la generación greedy.
+
+**Qué pasó.**
+
+| | v3 sin thinking | v4 sin thinking | v3 con thinking | v4 con thinking |
+|---|---|---|---|---|
+| Cadenas y paralelas | 50 % | 85 % | 25 % | 62 % |
+| Respuestas correctas | 72 % | 84 % | 67 % | 84 % |
+| Llamadas fallidas | 21 | 8 | 13 | 13 |
+| Segundos por caso | 7,5 | 4,7 | 17,0 | 16,3 |
+
+- **Veredictos:** salen de la herramienta y son correctos, salvo en `chain-06`.
+- **Declaraciones:** ninguna falsa. Con thinking, la regla de la acción sola paró 4 declaraciones
+  lanzadas en paralelo con ids inventados.
+- **Tres fallos nuestros:**
+  - **La lista de subdivisiones cortaba cada texto a 150 caracteres** y se perdía lo que las distingue
+    ("of vehicles of headings 8702, 8703 and 8704"). El modelo eligió la 1 en las dos pasadas. Además,
+    `chain-06` contaba como acierto porque solo comprobábamos que la respuesta dijera "38".
+  - **Los ejemplos de las descripciones eran valores del propio banco** (la factura `F-2026-118`, el REX
+    y los NIF). Con thinking, el modelo copió la factura en una declaración que nadie había pedido, con
+    exportador y ciudad inventados, y eso hizo fallar después a `stmt-01`.
+  - **Las cadenas no prohibían emitir declaraciones,** así que lo anterior no restaba.
+
+**Qué concluimos.** Quitar la regla de las manos del modelo es lo que más ha mejorado los resultados
+de toda la fase. Faltaba corregir nuestros tres fallos.
+
+### 2026-11-10 · Fase 2 · v5: arreglos y ruido; nos quedamos con este código y sin thinking
+
+**Qué queríamos saber.** Si los arreglos de la v4 se notan en el banco.
+
+**Qué hicimos.**
+- **Herramientas:**
+  - las subdivisiones se listan con su texto completo;
+  - ningún ejemplo de las descripciones coincide con un valor del banco (lo comprueba un test);
+  - `operations` acepta un texto suelto;
+  - `evaluate_origin` rechaza materiales que suman más que el precio en fábrica.
+- **Declaraciones:** solo si el usuario las pide y da factura, exportador y lugar.
+- **Banco:**
+  - las cadenas prohíben emitir declaraciones;
+  - `verdict_excludes` comprueba que la primera frase no diga el veredicto contrario, sin contar los
+    asteriscos del markdown.
+
+Volvimos a puntuar la v4 con estos criterios, solo para comparar.
+
+**Qué pasó.**
+
+| | v4 sin thinking | v5 sin thinking | v4 con thinking | v5 con thinking |
+|---|---|---|---|---|
+| Cadenas y paralelas | 85 % | 62 % | 54 % | 46 % |
+| Respuestas correctas | 80 % | 75 % | 80 % | 70 % |
+| Segundos por caso | 4,7 | 4,6 | 16,3 | 16,1 |
+
+**Sin thinking cambian 4 casos, y ninguno toca lo que modificamos.** Por ejemplo:
+- `par-03` deja de llamar al tipo de cambio;
+- `chain-02` y `stmt-02` evalúan el código del motor en vez del del ventilador.
+
+**Con thinking cambian 8, igual de dispersos.** Por ejemplo:
+- un JSON roto;
+- un tipo de cambio multiplicado en vez de copiar `amount_eur`;
+- un REX inventado, que rechaza la comprobación de formato.
+
+**Lo que se repite en todas las pasadas:**
+- **Ninguna declaración para un producto no originario ni con REX inventado.**
+- **En `chain-06` el modelo elige siempre la subdivisión 1,** también con el texto completo. Pone
+  `subdivision: 1` incluso cuando solo hay una, así que no lee la lista.
+- **A veces pasa como producto el código de un material.** No podemos rechazarlo en la herramienta:
+  en los datos de la fase 1, 1.079 de 4.800 problemas tienen un material con el mismo código SA6 que
+  el producto.
+- **Con thinking, una vez dijo que la declaración estaba emitida cuando se la habían rechazado.**
+
+**Qué concluimos.**
+- **La diferencia entre v4 y v5 no se puede medir con este banco.** Con 31 casos y una pasada por
+  versión, cambiar una línea del prompt mueve el resultado ±3 casos, como vimos al repetir la v3. Nos
+  quedamos con el código de la v5, que corrige errores reales de la v4.
+- **Para comparar versiones de verdad hace falta un test más grande:** lo generaremos para el SFT.
+- **Thinking apagado por defecto** (`ARCA_TOOLS_THINKING=0`). En la v4 y en la v5 no es mejor, es
+  3,5 veces más lento e intenta más declaraciones inventadas.
+- **El error de la acción rechazada dice ahora "no statement was issued".**
+- **Los fallos que quedan son de comprensión del modelo,** no de las herramientas: leer subdivisiones y
+  separar producto de materiales. Es lo que probaremos con SFT para tool use.
