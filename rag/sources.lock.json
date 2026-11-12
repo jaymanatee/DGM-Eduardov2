@@ -1,0 +1,58 @@
+{
+  "aeat_authorised_exporter": {
+    "file": "aeat_authorised_exporter.pdf",
+    "sha256": "706b75c134a57209bd60188dbce4afef35385f166e92468e307ac9cdbb7aab0e"
+  },
+  "aeat_rex": {
+    "file": "aeat_rex.pdf",
+    "sha256": "64a86797c4fc11b021a54e9936e2c3fc9cda1a7f1c0c19f6b7fce1918bdd1b8c"
+  },
+  "ceta": {
+    "file": "ceta.xhtml",
+    "sha256": "aceacb364c82357846267b5c7193f74569528b60c72df9df78b38ed220d01352"
+  },
+  "cn_explanatory_notes": {
+    "file": "cn_explanatory_notes.xhtml",
+    "sha256": "35a2891f98e1006ff62b208a5a111e5d7d881cb028965851ff3d38fcf0742032"
+  },
+  "guidance_preferential_origin_2025": {
+    "file": "guidance_preferential_origin_2025.pdf",
+    "sha256": "2c7084290a116edf5e04045eaffef94f48c44de6ffbe9e43914086dc6bb595ab"
+  },
+  "japan": {
+    "file": "japan.xhtml",
+    "sha256": "18a29a51b37ebf36ba130e0865add8ab3124a36adf000a08d3a6abff2fb9d40d"
+  },
+  "japan_statements_on_origin": {
+    "file": "japan_statements_on_origin.pdf",
+    "sha256": "6aa28af27ef1d786ea82fdc99b4e302ed04585854ebcf36566d269a5a530ffc8"
+  },
+  "korea_protocol": {
+    "file": "korea_protocol.html",
+    "sha256": "583c17cdfc44b3a257123f79074f261aa6816cfaa776d609532cdadd25521688"
+  },
+  "mercosur": {
+    "file": "mercosur.xhtml",
+    "sha256": "cbc0642fad6a15f25fb0d0dde5fac94cd0a136a255422d2b21edbd7f60e382f5"
+  },
+  "mercosur_origin_guidance_2026": {
+    "file": "mercosur_origin_guidance_2026.pdf",
+    "sha256": "b008c55ce3ab7900cddcdc6dee9061b2c228885fc66c57537d549077f33f1011"
+  },
+  "pem": {
+    "file": "pem.xhtml",
+    "sha256": "b9f1682de52496e7f3bf1d81ffe087f5b7b33cd2b06eed75d88e5f1a2e91daa5"
+  },
+  "tca": {
+    "file": "tca.xhtml",
+    "sha256": "b7e49aef9996590365e88c162c06a6fd21493468d0ce72bd5cc111af781c26e3"
+  },
+  "tca_guide_for_traders": {
+    "file": "tca_guide_for_traders.pdf",
+    "sha256": "ffd10a69b7b20022be0b633e69379f0c5815c059443d8fd91fac2cc1ff94e3c3"
+  },
+  "tca_origin_questions_answers": {
+    "file": "tca_origin_questions_answers.pdf",
+    "sha256": "c5187092d5593e8b0fa42f036ba2d85593c8274b42ad8f317fcdf88a8bc47596"
+  }
+}

@@ -17,6 +17,7 @@ tool_use/weights/*
 rag/corpus/*
 !rag/corpus/.gitkeep
 rag/index/
+rag/downloads/
 outputs/
 runs/
 wandb/
