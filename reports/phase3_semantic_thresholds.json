@@ -1,0 +1,235 @@
+{
+  "pairs": 15237,
+  "percentiles": {
+    "10": 0.299,
+    "25": 0.385,
+    "50": 0.477,
+    "75": 0.591,
+    "90": 0.681
+  },
+  "distance_before_an_article": {
+    "ceta/protocol_rules_of_origin.md": {
+      "before_article": 0.6,
+      "elsewhere": 0.48,
+      "n_articles": 34
+    },
+    "cn_notes/chapter87_vehicles.md": {
+      "before_article": 0.637,
+      "elsewhere": 0.527,
+      "n_articles": 49
+    },
+    "cn_notes/chapter94_furniture.md": {
+      "before_article": 0.565,
+      "elsewhere": 0.485,
+      "n_articles": 14
+    },
+    "cn_notes/section16_chapters84_85.md": {
+      "before_article": 0.668,
+      "elsewhere": 0.491,
+      "n_articles": 288
+    },
+    "guides/aeat_authorised_exporter.pdf": {
+      "before_article": 0.597,
+      "elsewhere": 0.539,
+      "n_articles": 29
+    },
+    "guides/aeat_rex.pdf": {
+      "before_article": 0.522,
+      "elsewhere": 0.517,
+      "n_articles": 22
+    },
+    "guides/guidance_preferential_origin_2025.pdf": {
+      "before_article": 0.502,
+      "elsewhere": 0.465,
+      "n_articles": 225
+    },
+    "guides/japan_statements_on_origin.pdf": {
+      "before_article": 0.659,
+      "elsewhere": 0.46,
+      "n_articles": 7
+    },
+    "guides/mercosur_origin_guidance_2026.pdf": {
+      "before_article": 0.519,
+      "elsewhere": 0.494,
+      "n_articles": 87
+    },
+    "guides/tca_guide_for_traders.pdf": {
+      "before_article": 0.558,
+      "elsewhere": 0.463,
+      "n_articles": 15
+    },
+    "guides/tca_origin_questions_answers.pdf": {
+      "before_article": 0.534,
+      "elsewhere": 0.482,
+      "n_articles": 144
+    },
+    "japan/annex3a_introductory_notes.md": {
+      "before_article": 0.649,
+      "elsewhere": 0.475,
+      "n_articles": 8
+    },
+    "japan/chapter3_rules_of_origin.md": {
+      "before_article": 0.557,
+      "elsewhere": 0.468,
+      "n_articles": 29
+    },
+    "korea/protocol_rules_of_origin.md": {
+      "before_article": 0.564,
+      "elsewhere": 0.465,
+      "n_articles": 34
+    },
+    "mercosur/annex3a_introductory_notes.md": {
+      "before_article": 0.63,
+      "elsewhere": 0.441,
+      "n_articles": 9
+    },
+    "mercosur/chapter3_rules_of_origin.md": {
+      "before_article": 0.572,
+      "elsewhere": 0.465,
+      "n_articles": 34
+    },
+    "pem/appendix1_rules_of_origin.md": {
+      "before_article": 0.515,
+      "elsewhere": 0.435,
+      "n_articles": 41
+    },
+    "tca/annex2_introductory_notes.md": {
+      "before_article": 0.614,
+      "elsewhere": 0.446,
+      "n_articles": 9
+    },
+    "tca/rules_of_origin.md": {
+      "before_article": 0.608,
+      "elsewhere": 0.458,
+      "n_articles": 32
+    }
+  },
+  "chunks_by_threshold": {
+    "0.25/min0": {
+      "n_chunks": 14405,
+      "mean_chars": 92.8,
+      "median_chars": 37,
+      "min_chars": 1,
+      "max_chars": 1294,
+      "under_100_chars": 9717,
+      "at_the_size_cap": 0
+    },
+    "0.25/min200": {
+      "n_chunks": 4286,
+      "mean_chars": 316.3,
+      "median_chars": 274,
+      "min_chars": 1,
+      "max_chars": 1294,
+      "under_100_chars": 10,
+      "at_the_size_cap": 0
+    },
+    "0.4/min0": {
+      "n_chunks": 11006,
+      "mean_chars": 122.0,
+      "median_chars": 43,
+      "min_chars": 1,
+      "max_chars": 1498,
+      "under_100_chars": 7282,
+      "at_the_size_cap": 8
+    },
+    "0.4/min200": {
+      "n_chunks": 3569,
+      "mean_chars": 380.2,
+      "median_chars": 298,
+      "min_chars": 1,
+      "max_chars": 1487,
+      "under_100_chars": 9,
+      "at_the_size_cap": 8
+    },
+    "0.5/min0": {
+      "n_chunks": 6868,
+      "mean_chars": 196.6,
+      "median_chars": 87,
+      "min_chars": 1,
+      "max_chars": 1493,
+      "under_100_chars": 3688,
+      "at_the_size_cap": 47
+    },
+    "0.5/min200": {
+      "n_chunks": 2914,
+      "mean_chars": 466.0,
+      "median_chars": 344,
+      "min_chars": 1,
+      "max_chars": 1496,
+      "under_100_chars": 8,
+      "at_the_size_cap": 41
+    },
+    "0.6/min0": {
+      "n_chunks": 3841,
+      "mean_chars": 353.0,
+      "median_chars": 182,
+      "min_chars": 1,
+      "max_chars": 1500,
+      "under_100_chars": 1456,
+      "at_the_size_cap": 140
+    },
+    "0.6/min200": {
+      "n_chunks": 2165,
+      "mean_chars": 627.8,
+      "median_chars": 485,
+      "min_chars": 1,
+      "max_chars": 1499,
+      "under_100_chars": 7,
+      "at_the_size_cap": 154
+    },
+    "0.65/min0": {
+      "n_chunks": 2694,
+      "mean_chars": 504.1,
+      "median_chars": 295,
+      "min_chars": 1,
+      "max_chars": 1500,
+      "under_100_chars": 758,
+      "at_the_size_cap": 227
+    },
+    "0.65/min200": {
+      "n_chunks": 1797,
+      "mean_chars": 756.7,
+      "median_chars": 632,
+      "min_chars": 1,
+      "max_chars": 1500,
+      "under_100_chars": 7,
+      "at_the_size_cap": 237
+    },
+    "0.7/min0": {
+      "n_chunks": 1770,
+      "mean_chars": 768.3,
+      "median_chars": 762,
+      "min_chars": 1,
+      "max_chars": 1500,
+      "under_100_chars": 263,
+      "at_the_size_cap": 336
+    },
+    "0.7/min200": {
+      "n_chunks": 1426,
+      "mean_chars": 954.1,
+      "median_chars": 1076,
+      "min_chars": 1,
+      "max_chars": 1500,
+      "under_100_chars": 4,
+      "at_the_size_cap": 339
+    },
+    "0.75/min0": {
+      "n_chunks": 1264,
+      "mean_chars": 1076.6,
+      "median_chars": 1334,
+      "min_chars": 1,
+      "max_chars": 1500,
+      "under_100_chars": 57,
+      "at_the_size_cap": 443
+    },
+    "0.75/min200": {
+      "n_chunks": 1181,
+      "mean_chars": 1152.4,
+      "median_chars": 1353,
+      "min_chars": 50,
+      "max_chars": 1500,
+      "under_100_chars": 2,
+      "at_the_size_cap": 436
+    }
+  }
+}

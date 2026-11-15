@@ -24,6 +24,19 @@ def test_html_to_text_keeps_paragraphs_and_joins_table_cells():
     )
 
 
+def test_html_to_text_glues_lone_list_markers_to_their_text():
+    raw = (
+        "<div><p>1.</p></div><div><p>Products shall be originating if:</p></div>"
+        "<div><p>(a)</p></div><div><p>wholly obtained; or</p></div>"
+        "<div><p>(ii)</p></div><div><p>sufficiently worked.</p></div>"
+        "<p>Article 3.5</p><p>Tolerances</p>"
+    )
+    assert html_to_text(raw) == (
+        "1. Products shall be originating if:\n\n(a) wholly obtained; or\n\n"
+        "(ii) sufficiently worked.\n\nArticle 3.5\n\nTolerances"
+    )
+
+
 def test_cut_section_from_start_to_the_first_end_after_it():
     text = "Contents: ANNEX 2 Notes\n\nANNEX 2\n\nNOTES\n\nNote 1 body.\n\nANNEX 3\n\nTABLE"
     section = Section("notes", "Notes", r"ANNEX 2\s+NOTES", r"ANNEX 3\s+TABLE")

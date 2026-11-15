@@ -98,6 +98,11 @@ class _TextExtractor(HTMLParser):
 # Markers that consolidated texts put where an amendment starts or ends (▼M59, ▼B, ▲).
 _CONSOLIDATION_MARK = re.compile(r"[▼►][A-Z]\d*|▲")
 _SPACES = re.compile(r"[ \t\xa0    ]+")
+# A paragraph that is only a list marker: "1.", "(a)", "(iii)", "2a)", "—". EUR-Lex lays
+# these out as two <div> columns, so they come out on their own; glue them to their text.
+_LONE_MARKER = re.compile(
+    r"^(\(?\d{1,3}[a-z]?\)|\(?[a-z]{1,4}\)|\d{1,3}(?:\.\d{1,3})*\.|[—–•-])\n\n(?=\S)", re.M
+)
 
 
 def html_to_text(raw: str) -> str:
@@ -106,8 +111,8 @@ def html_to_text(raw: str) -> str:
     parser.close()
     text = _CONSOLIDATION_MARK.sub(" ", "".join(parser.parts))
     lines = [_SPACES.sub(" ", line).strip() for line in text.split("\n")]
-    text = "\n".join(lines)
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    return _LONE_MARKER.sub(r"\1 ", text)
 
 
 # ------------------------------------------------------------------------------ sections

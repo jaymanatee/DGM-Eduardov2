@@ -54,10 +54,17 @@ class Source:
     licence: str
     manual: bool = False
     sections: tuple[Section, ...] = field(default=())  # empty: the whole file is kept
+    language: str = "en"
 
     @property
     def file_name(self) -> str:
         return self.name + self.suffix
+
+    def corpus_files(self) -> dict[str, str]:
+        """``{path under rag/corpus/: title}`` of the files this source turns into."""
+        if not self.sections:
+            return {f"{self.group}/{self.file_name}": self.title}
+        return {f"{self.group}/{s.name}.md": f"{self.title}: {s.title}" for s in self.sections}
 
 
 def eurlex(celex: str) -> str:
@@ -312,6 +319,7 @@ SOURCES: tuple[Source, ...] = (
         "Contenidos_Privados/Procedimientos_aduaneros/Origen/guia_export_aut.pdf",
         reference="Agencia Estatal de Administración Tributaria",
         licence=AEAT_LICENCE,
+        language="es",
     ),
     Source(
         name="aeat_rex",
@@ -322,6 +330,7 @@ SOURCES: tuple[Source, ...] = (
         "Novedades_aduanas/2025/REX_Guidance_NF.pdf",
         reference="Agencia Estatal de Administración Tributaria",
         licence=AEAT_LICENCE,
+        language="es",
     ),
     # ------------------------------------- Commission guides: bot check, download by hand
     Source(
@@ -372,3 +381,8 @@ SOURCES: tuple[Source, ...] = (
         manual=True,
     ),
 )
+
+
+def corpus_index() -> dict[str, tuple[Source, str]]:
+    """``{path under rag/corpus/: (source, title)}`` for every file ``download.py`` writes."""
+    return {path: (s, title) for s in SOURCES for path, title in s.corpus_files().items()}
