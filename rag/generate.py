@@ -32,6 +32,9 @@ The generator is configured from environment variables, as in phase 2:
 * ``ARCA_RAG_THINKING``  ``0`` (default) answers without thinking, ``1`` lets Qwen3 think.
   On the same sample, thinking took 5 to 10 times longer and cited less.
 * ``ARCA_RAG_MAX_NEW_TOKENS`` per answer (default 512, or 2048 when thinking)
+* ``ARCA_RAG_RERANK``    empty (default) serves the retrievers as they are; ``generic`` or
+  ``agreement`` puts Qwen3-Reranker on top of each of them, with that instruction
+  (``rag/rerank.py``): the first ``POOL`` hits reordered by the reranker's P(yes)
 
 Try it from the command line::
 
@@ -230,10 +233,12 @@ class RagPipeline:
         strategy: str = SERVING_STRATEGY,
         weight_bm25: float = HYBRID_LAMBDA,
         index_dir: str | Path = "rag/index",
+        rerank: str | None = None,
     ):
         self.model_id, self.adapter_path, self.thinking = model_id, adapter_path, thinking
         self.max_new_tokens = max_new_tokens or (2048 if thinking else 512)
         self.strategy, self.weight_bm25, self.index_dir = strategy, weight_bm25, Path(index_dir)
+        self.rerank = rerank or None
         self.retrievers: dict = {}
         self.model = self.tokenizer = None
 
@@ -244,13 +249,15 @@ class RagPipeline:
             adapter_path=os.environ.get("ARCA_RAG_ADAPTER") or None,
             thinking=os.environ.get("ARCA_RAG_THINKING", "0") == "1",
             max_new_tokens=int(os.environ.get("ARCA_RAG_MAX_NEW_TOKENS") or 0) or None,
+            rerank=os.environ.get("ARCA_RAG_RERANK") or None,
         )
 
     @property
     def name(self) -> str:
         """Model label for the response: id, adapter and whether it thinks."""
         label = self.model_id + (f"+{self.adapter_path}" if self.adapter_path else "")
-        return f"{label} (thinking {'on' if self.thinking else 'off'})"
+        rerank = f", rerank {self.rerank}" if self.rerank else ""
+        return f"{label} (thinking {'on' if self.thinking else 'off'}{rerank})"
 
     def load(self, generator: bool = True) -> None:
         """Ingest -> chunk -> the three retrievers -> the generator model.
@@ -271,6 +278,17 @@ class RagPipeline:
         dense = DenseRetriever(chunks, embedder, persist_dir=self.index_dir / self.strategy)
         hybrid = HybridRetriever(bm25, dense, weight_bm25=self.weight_bm25, pool=HYBRID_POOL)
         self.retrievers = {"bm25": bm25, "dense": dense, "hybrid": hybrid}
+        if self.rerank:
+            from rag.rerank import INSTRUCTIONS, Reranker, RerankingRetriever
+
+            if self.rerank not in INSTRUCTIONS:
+                raise ValueError(
+                    f"ARCA_RAG_RERANK={self.rerank!r}: one of {', '.join(INSTRUCTIONS)}"
+                )
+            reranker = Reranker(instruction=INSTRUCTIONS[self.rerank])
+            self.retrievers = {
+                name: RerankingRetriever(r, reranker) for name, r in self.retrievers.items()
+            }
         if generator:
             self._load_generator()
 

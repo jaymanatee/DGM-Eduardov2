@@ -150,12 +150,15 @@ def comparison_table(report: dict) -> str:
     def pct(value):
         return "  -  " if value is None else f"{100 * value:4.0f}%"
 
-    header = f"{'variant':<14}{'all':>6}{'answ.':>7}{'none':>6}" + "".join(f"{k:>7}" for k in kinds)
+    width = max([len("variant"), *map(len, variants)]) + 2
+    header = f"{'variant':<{width}}{'all':>6}{'answ.':>7}{'none':>6}" + "".join(
+        f"{k:>7}" for k in kinds
+    )
     lines = [header, "-" * len(header)]
     for label, variant in variants.items():
         s = variant["summary"]
         lines.append(
-            f"{label:<14}{pct(s['accuracy']):>6}{pct(s['answerable_correct']):>7}"
+            f"{label:<{width}}{pct(s['accuracy']):>6}{pct(s['answerable_correct']):>7}"
             f"{pct(s['unanswerable_abstained']):>6}"
             + "".join(f"{pct(s['by_kind'].get(k, {}).get('correct')):>7}" for k in kinds)
         )
