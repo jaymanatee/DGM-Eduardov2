@@ -44,6 +44,141 @@
         "cites_evidence_when_evidence_retrieved": null,
         "mean_seconds": 0.67
       }
+    },
+    "hybrid": {
+      "settings": {
+        "retriever": "hybrid",
+        "top_k": 5,
+        "model": "Qwen/Qwen3-1.7B (thinking off)"
+      },
+      "answers": "reports/phase3_generation_hybrid.jsonl",
+      "summary": {
+        "accuracy": 0.8281,
+        "answerable_correct": 0.8448,
+        "unanswerable_abstained": 0.6667,
+        "by_kind": {
+          "cross": {
+            "n": 18,
+            "correct": 0.8889
+          },
+          "es": {
+            "n": 8,
+            "correct": 0.875
+          },
+          "fact": {
+            "n": 29,
+            "correct": 0.8621
+          },
+          "multi": {
+            "n": 3,
+            "correct": 0.3333
+          },
+          "none": {
+            "n": 6,
+            "correct": 0.6667
+          }
+        },
+        "n_answerable": 58,
+        "n_unanswerable": 6,
+        "answerable_retrieval_hit": 0.8448,
+        "answerable_abstained": 0.0,
+        "abstained_when_evidence_retrieved": 0.0,
+        "correct_when_evidence_retrieved": 0.898,
+        "answered_cited": 0.9138,
+        "answered_cites_evidence": 0.6034,
+        "cites_evidence_when_evidence_retrieved": 0.7143,
+        "mean_seconds": 4.13
+      }
+    },
+    "bm25": {
+      "settings": {
+        "retriever": "bm25",
+        "top_k": 5,
+        "model": "Qwen/Qwen3-1.7B (thinking off)"
+      },
+      "answers": "reports/phase3_generation_bm25.jsonl",
+      "summary": {
+        "accuracy": 0.6875,
+        "answerable_correct": 0.7414,
+        "unanswerable_abstained": 0.1667,
+        "by_kind": {
+          "cross": {
+            "n": 18,
+            "correct": 0.8333
+          },
+          "es": {
+            "n": 8,
+            "correct": 0.625
+          },
+          "fact": {
+            "n": 29,
+            "correct": 0.7931
+          },
+          "multi": {
+            "n": 3,
+            "correct": 0.0
+          },
+          "none": {
+            "n": 6,
+            "correct": 0.1667
+          }
+        },
+        "n_answerable": 58,
+        "n_unanswerable": 6,
+        "answerable_retrieval_hit": 0.569,
+        "answerable_abstained": 0.0172,
+        "abstained_when_evidence_retrieved": 0.0,
+        "correct_when_evidence_retrieved": 0.9091,
+        "answered_cited": 0.9123,
+        "answered_cites_evidence": 0.4035,
+        "cites_evidence_when_evidence_retrieved": 0.697,
+        "mean_seconds": 4.36
+      }
+    },
+    "dense": {
+      "settings": {
+        "retriever": "dense",
+        "top_k": 5,
+        "model": "Qwen/Qwen3-1.7B (thinking off)"
+      },
+      "answers": "reports/phase3_generation_dense.jsonl",
+      "summary": {
+        "accuracy": 0.8438,
+        "answerable_correct": 0.8621,
+        "unanswerable_abstained": 0.6667,
+        "by_kind": {
+          "cross": {
+            "n": 18,
+            "correct": 0.7778
+          },
+          "es": {
+            "n": 8,
+            "correct": 0.875
+          },
+          "fact": {
+            "n": 29,
+            "correct": 0.931
+          },
+          "multi": {
+            "n": 3,
+            "correct": 0.6667
+          },
+          "none": {
+            "n": 6,
+            "correct": 0.6667
+          }
+        },
+        "n_answerable": 58,
+        "n_unanswerable": 6,
+        "answerable_retrieval_hit": 0.8966,
+        "answerable_abstained": 0.0,
+        "abstained_when_evidence_retrieved": 0.0,
+        "correct_when_evidence_retrieved": 0.9038,
+        "answered_cited": 0.9483,
+        "answered_cites_evidence": 0.6552,
+        "cites_evidence_when_evidence_retrieved": 0.7308,
+        "mean_seconds": 4.15
+      }
     }
   }
 }
