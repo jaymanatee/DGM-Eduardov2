@@ -158,6 +158,19 @@ def score_rankings(rankings: list[list[str]], gold: list[dict], ks=KS) -> dict[s
     return {key: round(value, 4) for key, value in result.items()}
 
 
+def scores_by_kind(rankings: list[list[str]], gold: list[dict]) -> dict[str, dict]:
+    """``score_rankings`` for each ``kind`` of question (fact, cross, multi, es...)."""
+    kinds = sorted({item.get("kind", "") for item in gold})
+    out = {}
+    for kind in kinds:
+        idx = [i for i, item in enumerate(gold) if item.get("kind", "") == kind]
+        out[kind] = {
+            "n": len(idx),
+            **score_rankings([rankings[i] for i in idx], [gold[i] for i in idx]),
+        }
+    return out
+
+
 def choose_lambda(sweep: dict[str, dict[str, float]]) -> str:
     """The λ with the best MRR; ties broken by Recall@5, then by the smaller λ."""
     return max(sweep, key=lambda lam: (sweep[lam]["mrr"], sweep[lam]["recall@5"], -float(lam)))
@@ -231,14 +244,16 @@ def evaluate_strategy(strategy, documents, embedder, gold, args) -> dict:
     }
     hybrid = {lam: score_rankings(r, resolved) for lam, r in rankings.items()}
     best = choose_lambda(hybrid)
+    final = {"bm25": ids(bm25_hits), "dense": ids(dense_hits), "hybrid": rankings[best]}
     return {
         "chunks": {k: round(v, 1) for k, v in describe(chunks).items()},
         "n_questions": len(resolved),
-        "bm25": score_rankings(ids(bm25_hits), resolved),
-        "dense": score_rankings(ids(dense_hits), resolved),
+        "bm25": score_rankings(final["bm25"], resolved),
+        "dense": score_rankings(final["dense"], resolved),
         "hybrid": {"best_lambda": float(best), **hybrid[best]},
         "hybrid_sweep": hybrid,
         "lambda_stability": lambda_stability(rankings, resolved),
+        "by_kind": {name: scores_by_kind(r, resolved) for name, r in final.items()},
         "per_question": [
             {
                 "id": item.get("id"),

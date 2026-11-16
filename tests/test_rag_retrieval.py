@@ -13,6 +13,7 @@ from rag.evaluate import (
     relevant_chunks,
     resolve_gold,
     score_rankings,
+    scores_by_kind,
 )
 from rag.ingest import Document
 from rag.retriever import DenseRetriever, Hit, HybridRetriever
@@ -154,3 +155,15 @@ def test_semantic_strategy_with_another_threshold():
     )  # fmt: skip
     chunks = build_chunks("semantic@0.5", [doc], FakeEmbedder(), context=False)
     assert [c.text for c in chunks] == ["The origin rules. More on origin. The tariff is low."]
+
+
+def test_scores_by_kind_splits_the_metrics_by_kind_of_question():
+    gold = [
+        {"kind": "cross", "relevant_groups": [{"a"}], "relevant_chunk_ids": ["a"]},
+        {"kind": "fact", "relevant_groups": [{"b"}], "relevant_chunk_ids": ["b"]},
+        {"kind": "cross", "relevant_groups": [{"c"}], "relevant_chunk_ids": ["c"]},
+    ]
+    rankings = [["a"], ["x", "b"], ["x"]]
+    report = scores_by_kind(rankings, gold)
+    assert report["cross"]["n"] == 2 and report["cross"]["mrr"] == 0.5
+    assert report["fact"]["mrr"] == 0.5
