@@ -13,22 +13,32 @@ retrieval, and the generator should say it does not know. Recall@k counts a piec
 as found when one of its chunks is in the top k (two chunks equally valid count once); the
 reciprocal rank is 1 / the position of the first chunk of any piece of evidence.
 
+The hybrid's λ is chosen by MRR (the generator reads the first chunks, so where the right
+one lands matters more than whether it is somewhere in the top 5), ties broken by Recall@5.
+As λ is chosen on the same questions it is scored on, ``lambda_stability`` repeats the choice
+on random halves of the gold set and scores it on the other half.
+
 Run::
 
     uv run python -m rag.evaluate                       # every strategy, every retriever
     uv run python -m rag.evaluate --strategies structural --no-context
+    uv run python -m rag.evaluate --strategies semantic@0.6 semantic@0.7 \\
+        --out reports/phase3_semantic_sweep.json        # the semantic threshold
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import random
 import re
+from collections import Counter
 from pathlib import Path
 
 GOLD_FILE = Path(__file__).parent / "gold" / "gold.jsonl"
 KS = (1, 3, 5, 10)
 LAMBDAS = tuple(round(0.1 * i, 1) for i in range(11))
+SPLITS = 200
 
 
 def recall_at_k(ranked_ids: list[str], relevant_ids: set[str], k: int) -> float:
@@ -148,6 +158,49 @@ def score_rankings(rankings: list[list[str]], gold: list[dict], ks=KS) -> dict[s
     return {key: round(value, 4) for key, value in result.items()}
 
 
+def choose_lambda(sweep: dict[str, dict[str, float]]) -> str:
+    """The λ with the best MRR; ties broken by Recall@5, then by the smaller λ."""
+    return max(sweep, key=lambda lam: (sweep[lam]["mrr"], sweep[lam]["recall@5"], -float(lam)))
+
+
+def lambda_stability(
+    rankings: dict[str, list[list[str]]], gold: list[dict], n_splits: int = SPLITS, seed: int = 0
+) -> dict:
+    """Choose λ on a random half of the questions and score it on the other half.
+
+    ``rankings`` maps each λ to the ranking of every question. Returns how often each λ is
+    chosen, and the mean MRR on the held-out half with the chosen λ, with the best λ of
+    that half (what a perfect choice would give) and with λ = 0 (the dense retriever alone).
+    """
+    rng, order = random.Random(seed), list(range(len(gold)))
+    chosen, held_out, best, dense = Counter(), [], [], []
+    for _ in range(n_splits):
+        rng.shuffle(order)
+        halves = order[: len(order) // 2], order[len(order) // 2 :]
+
+        def sweep(idx):
+            sub = [gold[i] for i in idx]
+            return {lam: score_rankings([r[i] for i in idx], sub) for lam, r in rankings.items()}
+
+        tune, test = sweep(halves[0]), sweep(halves[1])
+        lam = choose_lambda(tune)
+        chosen[lam] += 1
+        held_out.append(test[lam]["mrr"])
+        best.append(max(s["mrr"] for s in test.values()))
+        dense.append(test[min(test, key=float)]["mrr"])
+
+    def mean(xs):
+        return round(sum(xs) / len(xs), 4)
+
+    return {
+        "n_splits": n_splits,
+        "chosen": dict(sorted(chosen.items(), key=lambda kv: float(kv[0]))),
+        "held_out_mrr": mean(held_out),
+        "held_out_mrr_best_lambda": mean(best),
+        "held_out_mrr_dense": mean(dense),
+    }
+
+
 def evaluate_strategy(strategy, documents, embedder, gold, args) -> dict:
     """BM25, dense and the hybrid at every λ for one chunking strategy."""
     from rag.chunking import describe
@@ -169,17 +222,15 @@ def evaluate_strategy(strategy, documents, embedder, gold, args) -> dict:
     def ids(hits):
         return [[h.chunk.id for h in question] for question in hits]
 
-    hybrid = {
-        str(lam): score_rankings(
-            ids(
-                HybridRetriever.fuse(b, d, lam, max(KS))
-                for b, d in zip(bm25_hits, dense_hits, strict=True)
-            ),
-            resolved,
+    rankings = {
+        str(lam): ids(
+            HybridRetriever.fuse(b, d, lam, max(KS))
+            for b, d in zip(bm25_hits, dense_hits, strict=True)
         )
         for lam in LAMBDAS
     }
-    best = max(hybrid, key=lambda lam: (hybrid[lam]["recall@5"], hybrid[lam]["mrr"]))
+    hybrid = {lam: score_rankings(r, resolved) for lam, r in rankings.items()}
+    best = choose_lambda(hybrid)
     return {
         "chunks": {k: round(v, 1) for k, v in describe(chunks).items()},
         "n_questions": len(resolved),
@@ -187,6 +238,7 @@ def evaluate_strategy(strategy, documents, embedder, gold, args) -> dict:
         "dense": score_rankings(ids(dense_hits), resolved),
         "hybrid": {"best_lambda": float(best), **hybrid[best]},
         "hybrid_sweep": hybrid,
+        "lambda_stability": lambda_stability(rankings, resolved),
         "per_question": [
             {
                 "id": item.get("id"),
@@ -220,6 +272,66 @@ def print_table(results: dict) -> None:
             )
 
 
+SERIES = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100")  # categorical slots 1-4, fixed order
+INK, MUTED, GRID, SURFACE = "#0b0b0b", "#52514e", "#e4e3df", "#fcfcfb"
+
+
+def plot_sweep(results: dict, path: Path) -> None:
+    """MRR and Recall@5 of the hybrid against λ, one line per strategy, chosen λ marked."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2), sharex=True)
+    fig.patch.set_facecolor(SURFACE)
+    ends: list[list] = []
+    for ax, metric, title in zip(axes, ("mrr", "recall@5"), ("MRR", "Recall@5"), strict=True):
+        for color, (strategy, r) in zip(SERIES, results.items(), strict=False):
+            lams = sorted(r["hybrid_sweep"], key=float)
+            ys = [r["hybrid_sweep"][lam][metric] for lam in lams]
+            xs = [float(lam) for lam in lams]
+            ax.plot(xs, ys, color=color, linewidth=2, label=strategy)
+            best = r["hybrid"]["best_lambda"]
+            ax.scatter([best], [r["hybrid_sweep"][str(best)][metric]], s=48, color=color,
+                       edgecolor=SURFACE, linewidth=2, zorder=3)  # fmt: skip
+            ends.append([ys[-1], strategy])
+        # Direct labels at the right end, pushed apart so that close lines do not overlap.
+        low, high = ax.get_ylim()
+        gap, previous = 0.045 * (high - low), -float("inf")
+        for end in sorted(ends):
+            end[0] = previous = max(end[0], previous + gap)
+            ax.annotate(end[1], (1.0, end[0]), xytext=(6, 0), textcoords="offset points",
+                        va="center", fontsize=8, color=MUTED)  # fmt: skip
+        ends.clear()
+        ax.set_title(f"Hybrid {title} by λ (dot: chosen λ)", loc="left", color=INK, fontsize=10)
+        ax.set_xlabel("λ  (0 = dense only, 1 = BM25 only)", color=MUTED)
+        ax.set_xlim(-0.03, 1.22)
+        ax.set_xticks([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
+        ax.set_facecolor(SURFACE)
+        ax.grid(axis="y", color=GRID, linewidth=0.8)
+        ax.set_axisbelow(True)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        ax.tick_params(colors=MUTED)
+    axes[0].legend(loc="lower left", frameon=False, fontsize=8)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=150, bbox_inches="tight", facecolor=SURFACE)
+    plt.close(fig)
+
+
+def _strategy(name: str) -> str:
+    from rag.strategies import STRATEGIES, split_strategy
+
+    try:
+        base, _ = split_strategy(name)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    if base not in STRATEGIES:
+        raise argparse.ArgumentTypeError(f"unknown strategy {name!r}: {', '.join(STRATEGIES)}")
+    return name
+
+
 def main(argv: list[str] | None = None) -> None:
     from rag.embed import DEFAULT_QUERY_INSTRUCTION, CachedEmbedder
     from rag.ingest import load_corpus
@@ -229,7 +341,10 @@ def main(argv: list[str] | None = None) -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--gold", default=str(GOLD_FILE))
-    parser.add_argument("--strategies", nargs="+", default=list(STRATEGIES), choices=STRATEGIES)
+    parser.add_argument(
+        "--strategies", nargs="+", default=list(STRATEGIES), type=_strategy,
+        help=f"{', '.join(STRATEGIES)}; semantic@<threshold> for another threshold",
+    )  # fmt: skip
     parser.add_argument("--no-context", action="store_true", help="chunks without the header")
     parser.add_argument("--instruction", default=DEFAULT_QUERY_INSTRUCTION)
     parser.add_argument("--pool", type=int, default=20, help="hits per retriever in the hybrid")
@@ -251,6 +366,10 @@ def main(argv: list[str] | None = None) -> None:
         encoding="utf-8",
     )
     print(f"Results written to {out}")
+    if len(results) <= len(SERIES):  # one fixed colour per strategy, never cycled
+        png = out.with_name(out.stem + "_lambda.png")
+        plot_sweep(results, png)
+        print(f"λ sweep drawn in {png}")
 
 
 if __name__ == "__main__":

@@ -6,14 +6,17 @@ import pytest
 from rag.chunking import Chunk
 from rag.evaluate import (
     GoldError,
+    choose_lambda,
     evidence_recall_at_k,
     find_quote,
+    lambda_stability,
     relevant_chunks,
     resolve_gold,
     score_rankings,
 )
 from rag.ingest import Document
 from rag.retriever import DenseRetriever, Hit, HybridRetriever
+from rag.strategies import build_chunks, split_strategy
 
 pytest.importorskip("rank_bm25")
 
@@ -114,3 +117,40 @@ def test_evidence_recall_counts_each_piece_of_evidence_once():
     groups = [{"a", "b"}, {"c"}]
     assert evidence_recall_at_k(["a", "b", "x"], groups, k=3) == 0.5
     assert evidence_recall_at_k(["b", "c"], groups, k=2) == 1.0
+
+
+# ------------------------------------------------------------------------------- choosing λ
+
+
+def test_choose_lambda_by_mrr_then_recall_then_smaller_lambda():
+    sweep = {
+        "0.0": {"mrr": 0.60, "recall@5": 0.90},
+        "0.1": {"mrr": 0.70, "recall@5": 0.80},
+        "0.3": {"mrr": 0.70, "recall@5": 0.85},
+        "0.4": {"mrr": 0.70, "recall@5": 0.85},
+    }
+    assert choose_lambda(sweep) == "0.3"  # best MRR; 0.3 and 0.4 tie, the smaller wins
+
+
+def test_lambda_stability_on_held_out_halves():
+    # Eight questions whose only relevant chunk is "r": λ = 0.5 always ranks it first,
+    # λ = 0.0 second, so the choice is the same on every half.
+    gold = [{"relevant_groups": [{"r"}], "relevant_chunk_ids": ["r"]} for _ in range(8)]
+    rankings = {"0.0": [["x", "r"]] * 8, "0.5": [["r", "x"]] * 8}
+    report = lambda_stability(rankings, gold, n_splits=10)
+    assert report["chosen"] == {"0.5": 10}
+    assert report["held_out_mrr"] == report["held_out_mrr_best_lambda"] == 1.0
+    assert report["held_out_mrr_dense"] == 0.5
+
+
+def test_semantic_strategy_with_another_threshold():
+    assert split_strategy("structural") == ("structural", None)
+    assert split_strategy("semantic@0.6") == ("semantic", 0.6)
+    with pytest.raises(ValueError):
+        split_strategy("recursive@0.6")
+    doc = Document(
+        id="d", source="d.md", text="The origin rules. More on origin. The tariff is low.",
+        metadata={"suffix": ".md", "title": "D"},
+    )  # fmt: skip
+    chunks = build_chunks("semantic@0.5", [doc], FakeEmbedder(), context=False)
+    assert [c.text for c in chunks] == ["The origin rules. More on origin. The tariff is low."]
