@@ -1839,3 +1839,395 @@ desde el portátil (RTX 5070 Laptop, 8 GB) con `uv run arca-api` y el `.env` de 
 - **Si volvemos a entrenar:**
   - más trayectorias de divisa, con todos los códigos en los dos idiomas;
   - errores de red entre los `api_error`.
+
+### 2026-11-12 · Fase 3 · El corpus: 14 fuentes, 29 documentos y una descarga reproducible
+
+**Qué queríamos saber.** Qué documentos necesita el RAG para responder lo que no dan las
+herramientas de la fase 2 (plazos, tolerancias, pruebas de origen, clasificación), y cómo
+bajarlos siempre iguales.
+
+**Qué hicimos.**
+- **Fuentes** (`rag/sources.py`):
+
+  | Grupo | Qué | De dónde | Licencia |
+  |---|---|---|---|
+  | `tca`, `japan`, `korea`, `ceta`, `pem`, `mercosur` | De cada acuerdo, el capítulo o protocolo de origen, las notas introductorias, la declaración de origen y las disposiciones transitorias | Cellar, el repositorio de la Oficina de Publicaciones que sirve a EUR-Lex | Decisión 2011/833/UE: reutilización citando la fuente |
+  | `cn_notes` | Notas explicativas de la Nomenclatura Combinada, capítulos 84-85, 87 y 94 (texto consolidado del 13/2/2026) | Cellar | Ídem |
+  | `guides` | Guía de origen preferencial de la Comisión (2025); guía para operadores y compendio de preguntas del TCA; guía de declaraciones de origen UE-Japón; guía de origen UE-Mercosur (2026) | Web de la Comisión (DG TAXUD) | Ídem |
+  | `guides` | Guías de la AEAT: exportador autorizado y REX | AEAT | Condiciones de reutilización de la AEAT, citando la fuente |
+
+- **`rag/download.py`**:
+  - descarga cada fuente una vez a `rag/downloads/`;
+  - recorta las secciones con los patrones de inicio y fin de cada `Section`;
+  - escribe `rag/corpus/<grupo>/`, que es lo que lee `rag/ingest.py`.
+
+  `rag/sources.lock.json` guarda la huella sha256 de cada fichero, así que una descarga distinta
+  se detecta. El corpus y las descargas no están en git: se regeneran con el script.
+- **Comprobaciones anti-bots.** EUR-Lex y la web de la Comisión responden a los scripts con una
+  comprobación anti-bots, y no la saltamos.
+  - Los textos legales se bajan de Cellar, que está pensado para descargas automáticas.
+  - Las 4 guías de la Comisión están marcadas `manual`: el script dice de dónde bajarlas a mano
+    y qué nombre ponerles.
+  - El agente de usuario es `arca-rag-download/1.0`.
+
+**Qué pasó.** 29 documentos y 1,36 millones de caracteres (9,1 MB en `rag/corpus/`).
+
+**Qué concluimos.** Hay dos desviaciones de la propuesta:
+- **Las listas de reglas por partida quedan fuera del corpus.**
+  - La propuesta decía "trocearemos por artículo y por fila de regla". Pero son tablas que se
+    trocean mal, y `get_origin_rule` (fase 2) ya las sirve exactas.
+  - Consecuencia: el RAG no responde "qué regla tiene la partida X". El dorado lo comprueba con
+    q60, donde lo correcto es decir que no lo sabe. En la fase 4 eso lo hace la herramienta.
+- **Menos documentos de los previstos** (29 frente a 40-70). De cada acuerdo guardamos solo la
+  parte de origen, no el acuerdo entero.
+
+### 2026-11-15 · Fase 3 · Cuatro chunkings, el denso y el híbrido, y una evaluación por evidencia literal
+
+**Qué queríamos saber.** Cómo comparar chunkings y retrievers con un único conjunto dorado,
+si los identificadores de fragmento cambian con cada chunking.
+
+**Qué hicimos.**
+- **Cuatro chunkings** (`rag/strategies.py`):
+  - **recursivo** de 800 caracteres con 100 de solape, el del curso;
+  - **recursivo de 1.500** con 150 de solape. Es un control de tamaño: tiene el mismo tope que
+    los otros dos y separa el efecto de dónde se corta del de cuánto mide el fragmento;
+  - **semántico**: corta donde la distancia coseno entre frases consecutivas supera el umbral,
+    con un mínimo de 200 caracteres y un máximo de 1.500;
+  - **estructural**: una unidad por artículo, nota, código NC, encabezado numerado o pregunta
+    de las Q&A. Las unidades de menos de 200 caracteres se juntan con la siguiente, y las de
+    más de 1.500 se parten con el recursivo.
+
+  Todos llevan la misma cabecera `[documento › sección]` (`add_context`), para que la
+  comparación mida dónde corta cada estrategia y no lo que dice de cada fragmento.
+- **Denso** (`rag/retriever.py`):
+  - Qwen3-Embedding-0.6B, con vectores normalizados en NumPy;
+  - el índice se guarda en `rag/index/<estrategia>` con una huella del modelo y de cada
+    fragmento, y se reconstruye si cambia algo;
+  - `CachedEmbedder` recuerda cada pasaje embebido, así que cambiar de chunking no vuelve a
+    embeber lo que ya estaba.
+- **Híbrido:** `λ·BM25 + (1-λ)·denso`, con las puntuaciones reescaladas a [0, 1] (min-max) sobre
+  los 20 primeros de cada retriever.
+- **Evaluación por evidencia** (`rag/evaluate.py`):
+  - El dorado no guarda identificadores de fragmento, sino la cita literal del documento que
+    responde. `find_quote` la localiza aunque cambien los espacios.
+  - Un fragmento es relevante si contiene al menos la mitad de la cita. Si ninguno llega, cuenta
+    el que contenga más.
+  - Recall@k se cuenta por evidencia: una pregunta con dos evidencias vale 0,5 si solo se recupera
+    una. MRR es 1 / la posición del primer fragmento relevante.
+
+**Qué concluimos.** El mismo dorado sirve para cualquier chunking sin volver a anotar. Los
+resultados están en las entradas siguientes.
+
+### 2026-11-16 · Fase 3 · El conjunto dorado: 64 preguntas con la cita que las responde
+
+**Qué queríamos saber.** Con qué preguntas medir. Tienen que parecerse a las de un operador y
+hay que poder comprobarlas en el corpus.
+
+**Qué hicimos.** `rag/gold/gold.jsonl`, escrito leyendo el corpus. Cada pregunta tiene su
+respuesta, la evidencia (fuente y cita literal) y notas. Hay cinco tipos (`kind`):
+
+| Tipo | n | Qué es |
+|---|---|---|
+| `fact` | 29 | Un dato de un documento |
+| `cross` | 18 | La misma pregunta en varios acuerdos (tolerancia, validez, conservación de registros). Es el caso difícil: los artículos son casi idénticos entre acuerdos |
+| `multi` | 3 | Dos acuerdos en la misma pregunta |
+| `es` | 8 | En español: 6 sobre las guías de la AEAT, 1 sobre UE-Japón y 1 sobre UE-Mercosur |
+| `none` | 6 | Sin respuesta en el corpus: Australia, la regla de las camisetas (lista excluida), el IVA, cuántos exportadores REX hay, multas y el arancel NMF |
+
+Las 58 citas se encuentran exactamente una vez en el corpus. Una primera versión se revisó a mano y
+se corrigió:
+- la redacción jurídica (q06 "shall review", q57 "artículo 3.17, apartado 4");
+- las preguntas que dependían de la fecha (q08 y q09, ahora con las reglas vigentes hasta el
+  31/12/2026);
+- las que sonaban a examen (q46 y q47, reescritas como casos de una empresa);
+- las abstractas o con jerga (q05, q07, q29, q34 y q49, redactadas desde la situación del operador).
+
+**Qué concluimos.** Cada pregunta tiene una sola evidencia anotada. Más adelante vimos que las guías
+de la Comisión repiten muchos datos de los acuerdos, así que a veces hay dos fragmentos igual de
+válidos y solo uno cuenta (entradas de BM25 y del reranker, más abajo).
+
+### 2026-11-16 · Fase 3 · El umbral del chunking semántico: 0,7
+
+**Qué queríamos saber.** Qué umbral de distancia usar para que la comparación con el semántico sea
+justa, aunque no sea el que se sirve.
+
+**Qué hicimos.**
+- `uv run python -m rag.semantic_analysis` calcula las distancias entre frases consecutivas
+  (`reports/phase3_semantic_thresholds.json` y `reports/phase3_semantic_distances.png`).
+- `uv run python -m rag.evaluate --strategies semantic@0.55 semantic@0.6 semantic@0.65
+  semantic@0.7 semantic@0.75 --out reports/phase3_semantic_sweep.json` barre el umbral.
+
+**Qué pasó.**
+- **Las distancias** de 15.237 pares tienen mediana 0,48 y percentil 90 de 0,68. Delante de un
+  artículo la distancia es mayor que en el resto (en el TCA, 0,61 frente a 0,46), así que el
+  umbral sí tiende a cortar en los artículos.
+- **Sin mínimo de tamaño,** con 0,7 salen 1.770 fragmentos, 263 de ellos de menos de 100
+  caracteres: encabezados sueltos. Con el mínimo de 200 salen 1.426, y solo 4 de menos de 100.
+- **El barrido** (MRR del híbrido):
+
+  | Umbral | 0,55 | 0,6 | 0,65 | 0,7 | 0,75 |
+  |---|---|---|---|---|---|
+  | Fragmentos | 2.524 | 2.165 | 1.797 | 1.426 | 1.181 |
+  | MRR híbrido | 0,52 | 0,55 | 0,56 | 0,60 | 0,62 |
+  | Cerrados por el tope de 1.500 | — | 7 % | 13 % | 24 % | 37 % |
+
+**Qué concluimos.** Elegimos 0,7. A 0,75 el MRR sube 0,02, que está dentro del ruido. Pero el 37 %
+de los fragmentos ya los cierra el tope de tamaño y no la distancia: es casi trocear por longitud.
+
+### 2026-11-16 · Fase 3 · Chunking y retrievers: gana el estructural, y λ = 0,3 elegido por MRR
+
+**Qué queríamos saber.** Qué chunking y qué retriever recuperan mejor, y qué λ usar en el híbrido
+sin ajustarlo al dorado.
+
+**Qué hicimos.** `uv run python -m rag.evaluate`:
+- las cuatro estrategias con los tres retrievers, sobre las 58 preguntas con respuesta;
+- λ de 0 a 1 en pasos de 0,1. Se elige por MRR; si hay empate, por R@5, y si sigue, el λ menor;
+- **comprobación en mitades:** 200 particiones aleatorias del dorado en dos mitades. En cada una se
+  elige λ con una mitad y se mide el MRR en la otra.
+
+Resultados en `reports/phase3_eval.json`, y las curvas de λ en `reports/phase3_eval_lambda.png`.
+
+**Qué pasó.**
+
+| Chunking | Fragmentos | Mediana (car.) | BM25 R@5 / MRR | Denso R@5 / MRR | Híbrido: λ, R@5 / MRR |
+|---|---|---|---|---|---|
+| Recursivo 800 | 2.266 | 678 | 0,60 / 0,46 | 0,74 / 0,55 | 0,4: 0,78 / 0,60 |
+| Recursivo 1.500 | 1.106 | 1.375 | 0,49 / 0,37 | 0,77 / 0,55 | 0,4: 0,73 / 0,59 |
+| Semántico 0,7 | 1.426 | 1.076 | 0,47 / 0,42 | 0,72 / 0,52 | 0,4: 0,76 / 0,60 |
+| **Estructural** | 1.523 | 963 | 0,56 / 0,47 | **0,88** / 0,67 | **0,3: 0,84 / 0,72** |
+
+- **En las mitades,** el λ elegido sigue ganando al denso en todas las estrategias:
+  - estructural: 0,694 frente a 0,670 (0,722 si se acertase siempre el mejor λ);
+  - recursivo: 0,574 frente a 0,543;
+  - recursivo de 1.500: 0,581 frente a 0,540;
+  - semántico: 0,578 frente a 0,518.
+- **En el estructural, el λ elegido va de 0,1 a 0,5,** y 0,3 sale en 85 de las 200 particiones.
+- **BM25 falla en las `cross`** (MRR de 0,38 en el estructural, frente a 0,73 del denso): todos
+  los acuerdos usan las mismas palabras, y el nombre del acuerdo es un token entre muchos.
+- **El híbrido mejora al denso en R@1** (0,50 → 0,60) y en MRR, en `fact` (0,61 → 0,67) y en
+  `cross` (0,73 → 0,80). En R@5 pierde algo (0,88 → 0,84).
+
+**Qué concluimos.**
+- **Gana el estructural.** Su unidad es la del documento (el artículo, la pregunta de las Q&A), así
+  que la evidencia queda entera en un fragmento y la cabecera nombra el acuerdo y el artículo.
+- **No es por el tamaño.** El recursivo de 1.500, con fragmentos aún más largos, no lo iguala:
+  importa dónde se corta, no cuánto mide el fragmento.
+- **El semántico** corta dentro de los artículos, donde cambia el tema de una lista de condiciones,
+  y su ventaja sobre el recursivo es pequeña.
+- **Se sirve el estructural con el híbrido y λ = 0,3,** elegido por MRR.
+
+### 2026-11-16 · Fase 3 · Sin la cabecera `[documento › sección]` la recuperación se hunde
+
+**Qué queríamos saber.** Cuánto de lo anterior se debe a la cabecera que añade `add_context`.
+
+**Qué hicimos.** `uv run python -m rag.ablations`: lo mismo, con y sin cabecera, en el estructural y
+el recursivo (`reports/phase3_ablations.json`).
+
+**Qué pasó.**
+
+| | Con cabecera | Sin cabecera |
+|---|---|---|
+| Estructural, denso: MRR (`cross`) | 0,67 (0,73) | 0,40 (0,25) |
+| Estructural, híbrido: MRR | 0,72 | 0,44 |
+| Estructural, BM25: MRR | 0,47 | 0,40 |
+| Recursivo, denso: MRR (`cross`) | 0,55 (0,58) | 0,26 (0,10) |
+
+**Qué concluimos.** La cabecera lleva el nombre del acuerdo, que el texto del artículo casi nunca
+repite. Sin ella, las preguntas `cross` eligen casi al azar entre artículos casi idénticos de varios
+acuerdos. Es la medida más importante de la fase: lo que más pesa en la recuperación es saber de
+dónde viene cada fragmento.
+
+### 2026-11-16 · Fase 3 · La instrucción de la consulta: nos quedamos con la genérica
+
+**Qué queríamos saber.** Si cambiar la instrucción con la que Qwen3-Embedding embebe la consulta
+mejora la recuperación.
+
+**Qué hicimos.** En `rag/ablations.py`, cinco instrucciones sobre el estructural con cabecera:
+- **genérica:** la de `embed.py`;
+- **ninguna:** sin prefijo;
+- **dominio:** pregunta de un operador sobre origen preferencial de la UE;
+- **dominio + acuerdo:** la anterior, más "the passage must come from the agreement the question
+  refers to";
+- **paráfrasis:** "retrieve passages that are paraphrases of the question".
+
+**Qué pasó.**
+
+| Instrucción | Denso MRR | Denso R@5 | `cross` | `es` | Híbrido MRR (λ elegido) |
+|---|---|---|---|---|---|
+| Genérica | 0,67 | 0,88 | 0,73 | 0,73 | 0,72 (0,3) |
+| Ninguna | 0,66 | 0,81 | 0,74 | 0,70 | 0,70 (0,4) |
+| Dominio | 0,72 | 0,83 | 0,79 | 0,62 | 0,71 (0,0) |
+| Dominio + acuerdo | 0,72 | 0,83 | 0,79 | 0,62 | 0,73 (0,1) |
+| Paráfrasis | 0,71 | 0,78 | 0,76 | 0,72 | 0,72 (0,2) |
+
+- La instrucción de dominio cambia el primer resultado en el 43 % de las preguntas.
+- La de paráfrasis queda a coseno 0,967 de la genérica y aun así mueve el MRR.
+
+**Qué concluimos.**
+- **Nos quedamos con la genérica.**
+  - La de dominio sube el MRR del denso (0,67 → 0,72) y las `cross`, pero baja las preguntas en
+    español (0,73 → 0,62) y R@5 (0,88 → 0,83).
+  - En el híbrido, que es lo que se sirve, todas quedan entre 0,70 y 0,73, dentro del ruido.
+- **La instrucción y λ no son independientes.** Con la de dominio, el mejor λ es 0: el denso ya
+  recoge lo que aportaba BM25.
+
+### 2026-11-16 · Fase 3 · Generación con citas: pasajes numerados y una frase de "no lo sé" que sobra
+
+**Qué queríamos saber.** Si Qwen3-1.7B responde citando los fragmentos y dice que no lo sabe
+cuando los pasajes no responden.
+
+**Qué hicimos.** `rag/generate.py`, detrás de `POST /rag`:
+- **Generador:** Qwen3-1.7B, sin thinking y con decodificación greedy;
+- **Mensaje de sistema con las reglas:**
+  - solo hechos de los pasajes;
+  - un pasaje de otro acuerdo no responde;
+  - una cita después de cada frase;
+  - la disposición vigente hoy;
+  - una frase fija si nada responde;
+  - el idioma de la pregunta;
+- **Mensaje de usuario:** la plantilla de clase, con los 5 pasajes recuperados.
+
+Lo fuimos ajustando con una muestra del dorado. Cada problema y su arreglo:
+
+| Problema | Arreglo |
+|---|---|
+| Con todo en un solo mensaje, a menudo no citaba nada | Las reglas, en un mensaje de sistema |
+| Copiaba mal los identificadores de 10 caracteres, y la cita a un fragmento inexistente se pierde | Pasajes numerados [1]..[5]; `restore_citations` vuelve a poner los ids |
+| Con la regla de "responde la parte que puedas", añadía "no lo sé" y dejaba de citar | Quitamos esa regla; la abstención solo cuenta si la respuesta empieza diciéndolo y no cita nada |
+| Añadía la frase fija de "no lo sé" al final de 33 de 55 respuestas que sí citaban | `drop_stray_no_answer` la quita cuando el resto de la respuesta cita algo; quedan 0 |
+| Con thinking, tardaba de 5 a 10 veces más y citaba menos | Sin thinking |
+
+**Cómo se comprueban las citas.** `extract_citations` solo se queda con los identificadores que
+están entre los fragmentos devueltos. Por construcción, toda cita existe. Que la cita sea la buena se
+mide aparte: si el fragmento citado contiene la evidencia del dorado.
+
+**Qué pasó** (`uv run python -m rag.evaluate_generation`, híbrido con top 5):
+- la evidencia está entre los 5 recuperados en el 84,5 % de las preguntas;
+- ninguna abstención falsa;
+- el 91 % de las respuestas cita, y el 71 % cita la evidencia cuando se recuperó;
+- en las preguntas sin respuesta en el corpus dice "no lo sé" en 4 de 6;
+- unos 4 s por respuesta, 4,7 GB de GPU y unos 20 s de carga en el portátil (RTX 5070, 8 GB).
+
+**Qué concluimos.** El generador cita y no se abstiene sin motivo. Faltaba saber si acierta, que es la
+entrada siguiente.
+
+### 2026-11-16 · Fase 3 · Respuestas correctas sobre el dorado: 0 de 58 sin RAG, 48 con el híbrido
+
+**Qué queríamos saber.** Lo mismo que en las fases 1 y 2: con un banco de preguntas, cuántas acierta
+el modelo con la capacidad de la fase y cuántas sin ella.
+
+**Qué hicimos.**
+- **Las comprobaciones de la fase 2 en cada pregunta del dorado:**
+  - `answer_contains`: el dato clave, con alternativas (plazo, umbral o código), no la respuesta
+    entera;
+  - `verdict_excludes`: lo que no puede decir la primera frase, para las de sí o no.
+
+  La regla es la de `tool_use/evaluate.py`, con tres cambios:
+  - se quitan antes las citas, porque los ids llevan cifras;
+  - las cifras se escriben de una sola forma (`10 %` = `10 per cent` = `10%`;
+    `1,200` = `1 200` = `1200`);
+  - una cadena tiene que empezar palabra, para que "2 years" no aparezca dentro de "12 years".
+
+  Decir "no lo sé" es un fallo en una pregunta con respuesta y un acierto en las de `none`.
+- **La línea base:** `--retriever none`, el mismo modelo con las mismas reglas pero sin pasajes. Es el
+  equivalente del `--no-tools` de la fase 2.
+- `uv run python -m rag.evaluate_generation --retriever {none,bm25,dense,hybrid}`. Las respuestas
+  quedan en `reports/phase3_generation_<variante>.jsonl`, junto a la esperada, y la comparación en
+  `reports/phase3_generation.json`. `--rescore` vuelve a puntuar sin el modelo.
+- **Revisamos a mano las respuestas** dadas por buenas y por malas. Ajustamos tres comprobaciones:
+  - q09 y q43 eran falsos aciertos: una respuesta confusa contenía la cifra buena de pasada;
+  - q36 era un falso fallo: "cinco años como máximo" es justo 3 + 2.
+
+**Qué pasó.**
+
+| Variante | Con respuesta (58) | Sin respuesta (6): "no lo sé" | Total (64) |
+|---|---|---|---|
+| Sin RAG | **0** | 5 | 5 (8 %) |
+| BM25 | 43 (74 %) | 1 | 44 (69 %) |
+| Denso | 50 (86 %) | 4 | 54 (84 %) |
+| **Híbrido** (servido) | 48 (83 %) | 4 | 52 (81 %) |
+
+- **Sin RAG,** el modelo dice que no lo sabe en 46 de las 58 preguntas con respuesta, y en las 12
+  que contesta se equivoca:
+  - 3 años de validez en Japón (son 12 meses);
+  - 100 € para paquetes pequeños (son 500 € y 1.200 €);
+  - el código "0101" (es U116);
+  - un acuerdo con Mercosur aplicado desde 2023 (es desde el 1/5/2026).
+- **Con la evidencia entre los 5 recuperados,** el generador acierta alrededor del 90 % con los tres
+  retrievers. Lo que los separa es cuánto recuperan.
+- **BM25 acierta 13 preguntas sin haber recuperado el fragmento anotado.** Las guías de la Comisión
+  repiten el dato en otro fragmento. Con las preguntas sin respuesta es el peor: recupera pasajes de
+  otros acuerdos con las mismas palabras y responde con ellos.
+- **Fallos del híbrido:**
+  - **La evidencia no llega al top 5 (9 preguntas).** En 5 responde bien igualmente con otro
+    fragmento (q04, q05, q06, q39, q45). Falla en q02, q17, q20 y q54.
+  - **Tiene la evidencia y falla (6 preguntas):**
+    - q27: toma los 500 € de otro régimen en lugar de los 1.000 $ de Corea;
+    - q43: da el 10 % de los otros acuerdos en lugar del 15 % del PEM;
+    - q09: mezcla las reglas de baterías de 2021-2023 con las de 2024-2026;
+    - q13: dice que sí pueden beneficiarse;
+    - q44: no dice que la prohibición de drawback del PEM es solo para textiles;
+    - q46: responde la mitad del PEM y olvida Corea.
+  - **Responde lo que no está en el corpus (2 preguntas):**
+    - q59, Australia: da los 12 meses de Japón y cita el acuerdo con Japón;
+    - q60, camisetas: se inventa una regla del 8 % a partir de un ejemplo genérico.
+
+**Qué concluimos.**
+- **Todo lo que acierta, lo acierta gracias al corpus.**
+- **El denso y el híbrido empatan en las respuestas:** 2 preguntas de 58, que no es una diferencia
+  significativa. Se sirve el híbrido porque gana en recuperación (MRR 0,72 frente a 0,67, también en
+  las mitades), que es la métrica con la que elegimos.
+- **El fallo que más se repite es confundir acuerdos** (q27, q43, q59). La cabecera lo resolvió en la
+  recuperación, pero vuelve a aparecer en la generación.
+
+### 2026-11-16 · Fase 3 · Reranker Qwen3-Reranker-0.6B: medido y desactivado
+
+**Qué queríamos saber.** Si un cross-encoder sobre los 20 primeros resultados sube el fragmento
+bueno a las primeras posiciones, y si arregla la confusión entre acuerdos.
+
+**Qué hicimos.** `rag/rerank.py`:
+- **Cómo puntúa:** el modelo lee la pregunta y el fragmento juntos, con el prompt de la tarjeta del
+  modelo. La puntuación es P(yes) frente a P(no) en el primer token de la respuesta. Se reordenan
+  los 10, 20 o 30 primeros de cada retriever.
+- **Dos instrucciones:**
+  - la genérica de los embeddings;
+  - una "de acuerdo": un pasaje de otro acuerdo no responde.
+- **Ejecución:**
+  - `HF_HOME=./hf_cache uv run python -m rag.rerank --instruction {generic,agreement}` deja
+    `reports/phase3_rerank_<instrucción>.json`;
+  - `ARCA_RAG_RERANK={generic,agreement} uv run python -m rag.evaluate_generation --retriever
+    hybrid --label hybrid_rerank_<instrucción>` mide las respuestas.
+
+**Qué pasó.**
+- **Recuperación** (MRR, reordenando los 20 primeros):
+
+  | | Sin reranker | Genérica | De acuerdo |
+  |---|---|---|---|
+  | BM25 | 0,47 | **0,61** | 0,58 |
+  | Denso | **0,67** | 0,65 | 0,66 |
+  | Híbrido | **0,72** | 0,64 | 0,65 |
+
+  - **Parte de lo que "rompe" no es un fallo.** En q13 pone primero la pregunta 76 de las Q&A del
+    TCA, que trata justo ese caso. El dorado solo anota un fragmento por pregunta.
+  - **Otra parte sí lo es.** En q33 (CETA) y q43 (PEM) sube la tolerancia del TCA. Casi todo lo que
+    trata del tema puntúa entre 0,999 y 1,000: el modelo de 0,6B ve el tema, pero no de qué acuerdo
+    habla el fragmento.
+- **Respuestas, con el híbrido:**
+  - **Con la instrucción genérica,** arregla 5 preguntas con respuesta (q02, q13, q17, q27 y q54) y
+    rompe q18. Pasa de 48 a 52 de 58.
+  - **Pero en las preguntas sin respuesta** pasa de 4 a 2 abstenciones: en q63 y q64 sube fragmentos
+    muy del tema, y el modelo contesta. En q64 se inventa un arancel del 0 %.
+  - **En total,** 54 de 64 frente a 52.
+  - **Con la instrucción de acuerdo,** 50 de 64.
+- **Coste:** 1 s más por respuesta. Al principio el pico de memoria era de 7,8 GB, porque el modelo
+  calculaba los logits de todo el vocabulario en todas las posiciones; con `logits_to_keep=1` baja a
+  1,7 GB.
+
+**Qué concluimos.**
+- **Desactivado por defecto** (`ARCA_RAG_RERANK` vacío). Empeora la recuperación y añade tiempo.
+  Mejora las respuestas a costa de decir menos veces "no lo sé", que la rúbrica comprueba.
+- **Con 58 + 6 preguntas, ninguna de las dos diferencias es significativa.**
+- **Si se retoma:**
+  - un reranker mayor (el de 4B no cabe en el portátil, pero sí en la DGX);
+  - anotar en el dorado los fragmentos igual de válidos, para que la recuperación no penalice que
+    el reranker elija otro que también responde.
