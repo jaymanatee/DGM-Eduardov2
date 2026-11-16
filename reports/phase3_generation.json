@@ -1,0 +1,49 @@
+{
+  "variants": {
+    "none": {
+      "settings": {
+        "retriever": "none",
+        "top_k": null,
+        "model": "Qwen/Qwen3-1.7B (thinking off)"
+      },
+      "answers": "reports/phase3_generation_none.jsonl",
+      "summary": {
+        "accuracy": 0.0781,
+        "answerable_correct": 0.0,
+        "unanswerable_abstained": 0.8333,
+        "by_kind": {
+          "cross": {
+            "n": 18,
+            "correct": 0.0
+          },
+          "es": {
+            "n": 8,
+            "correct": 0.0
+          },
+          "fact": {
+            "n": 29,
+            "correct": 0.0
+          },
+          "multi": {
+            "n": 3,
+            "correct": 0.0
+          },
+          "none": {
+            "n": 6,
+            "correct": 0.8333
+          }
+        },
+        "n_answerable": 58,
+        "n_unanswerable": 6,
+        "answerable_retrieval_hit": null,
+        "answerable_abstained": 0.7931,
+        "abstained_when_evidence_retrieved": null,
+        "correct_when_evidence_retrieved": null,
+        "answered_cited": null,
+        "answered_cites_evidence": null,
+        "cites_evidence_when_evidence_retrieved": null,
+        "mean_seconds": 0.67
+      }
+    }
+  }
+}
