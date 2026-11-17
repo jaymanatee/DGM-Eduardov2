@@ -43,8 +43,7 @@ explicar el resultado.
  
 ## Demo
  
-<!-- Sustituir por el GIF de la demo -->
-![Demo de ARCA](docs/img/demo.gif)
+![Demo de ARCA](demo.gif)
  
 ## Arquitectura
  
