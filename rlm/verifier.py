@@ -24,7 +24,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
-
+import math
 from rlm.rewards import extract_answer, normalize_number
 
 
@@ -128,15 +128,19 @@ class OriginVerifier(Verifier):
 
     @staticmethod
     def _as_float(value: Any) -> float | None:
+        """Un porcentaje real. NaN e infinito se rechazan: con NaN toda comparación da falso,
+        así que ``abs(pct - esperado) > tolerancia`` nunca se cumpliría y la respuesta colaría
+        sin haber calculado nada."""
         if isinstance(value, bool):
             return None
         if isinstance(value, (int, float)):
-            return float(value)
+            return float(value) if math.isfinite(value) else None
         if isinstance(value, str):
             try:
-                return float(value.replace("%", "").replace(",", ".").strip())
+                number = float(value.replace("%", "").replace(",", ".").strip())
             except ValueError:
                 return None
+            return number if math.isfinite(number) else None
         return None
 
     def check(self, predicted: str | None, expected: str) -> tuple[bool, str]:
