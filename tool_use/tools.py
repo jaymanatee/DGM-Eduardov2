@@ -340,21 +340,65 @@ def _in_force(text: str, today: date) -> str:
 # that must be originating. Read as a plain criterion they would be wrong, sometimes in the
 # exporter's favour, so the rule goes to not_machine_readable and is checked by hand.
 _UNCHECKABLE = ("provided that", "must be originating", "weight")
-# A limit on the materials of given headings or chapters only, or one item, "(ii) ...", of a
-# list of conditions that all apply (the API sends each item as a rule of its own).
-_PARTIAL = re.compile(
-    r"materials of (?:sub)?headings? \d|materials of chapters? \d|^\(?[ivx]{1,4}\)|^- [a-z]\)"
+# A limit on the materials of given headings or chapters only. Checked on the text *before* any
+# "except", because an exclusion ("CTH except from non-originating materials of heading 7010")
+# names materials of a heading too, and that one the engine does check: see _excluded_headings.
+_PARTIAL_VALUE = re.compile(r"materials of (?:sub)?headings? \d|materials of chapters? \d")
+# One item, "(ii) ...", of a list of conditions that all apply (the API sends each as its own
+# rule). Anchored, so it is checked on the whole text.
+_PARTIAL_ITEM = re.compile(r"^\(?[ivx]{1,4}\)|^- [a-z]\)")
+
+# The exclusion clause of a "CTH except ..." rule. The engine excludes whole 4-digit headings
+# (evaluate_origin truncates each to 4 digits), so only a clause that names headings and nothing
+# else can be read exactly. Anything narrower would make the engine stricter than the rule, and a
+# false "not originating" costs the exporter the tariff, which is the harm ARCA exists to avoid.
+# So those stay in not_machine_readable:
+#   - a subheading ("except from subheading 730120": only 7301.20 is out, not all of 7301);
+#   - a kind of article inside a heading ("except from assemblies of uppers ... of heading 6406").
+_EXCL_LEAD = re.compile(
+    r"^(?:\s|,|and|or|from|those|of|the|non-\s*originating|materials)*",
 )
+_EXCL_RANGE = re.compile(r"^(?:heading\s*)?(\d{4})\s*to\s*(?:heading\s*)?(\d{4})\b")
+_EXCL_ONE = re.compile(r"^(?:heading\s*)?(\d{4})\b")
+_EXCL_END = re.compile(r"^[\s.,;)]*$")
+
+
+def _excluded_headings(clause: str) -> list[str] | None:
+    """'from heading 9108 to heading 9114' -> ['9108', ..., '9114']; None if the clause says
+    anything the engine cannot express as whole excluded headings."""
+    if "subheading" in clause:
+        return None
+    rest, headings = clause, []
+    while True:
+        rest = rest[_EXCL_LEAD.match(rest).end() :]
+        if (span := _EXCL_RANGE.match(rest)) is not None:
+            first, last = int(span.group(1)), int(span.group(2))
+            if not 0 < last - first < 100:
+                return None
+            headings += [str(h) for h in range(first, last + 1)]
+        elif (one := _EXCL_ONE.match(rest)) is not None:
+            span, headings = one, headings + [one.group(1)]
+        elif _EXCL_END.match(rest):
+            return headings or None
+        else:
+            return None  # prose, so the exclusion is narrower than the headings it names
+        rest = rest[span.end() :]
 
 
 def _criterion(text: str, rule_class: list[str]) -> dict[str, Any] | None:
     """One API rule -> a Criterion for evaluate_origin, or None if it does not fit the engine."""
-    if len(rule_class) != 1 or rule_class[0] not in CRITERIA_PRIORITY:
+    # 'CTH EXCEPT' is not a second criterion: it says this CTH carries an exclusion, which
+    # _excluded_headings reads off the text.
+    kinds = [c for c in rule_class if c != "CTH EXCEPT"]
+    if len(kinds) != 1 or kinds[0] not in CRITERIA_PRIORITY:
         return None
-    kind, lowered = rule_class[0], text.lower()
+    kind, lowered = kinds[0], text.lower()
     if "same heading" in lowered:  # a cap on same-heading materials only, not a MaxNOM
         return None
-    if any(condition in lowered for condition in _UNCHECKABLE) or _PARTIAL.search(lowered):
+    head, _, exception = lowered.partition("except")
+    if any(condition in lowered for condition in _UNCHECKABLE):
+        return None
+    if _PARTIAL_VALUE.search(head) or _PARTIAL_ITEM.search(lowered):
         return None
     criterion: dict[str, Any] = {"kind": kind}
     if kind in VALUE_CRITERIA:
@@ -363,9 +407,8 @@ def _criterion(text: str, rule_class: list[str]) -> dict[str, Any] | None:
             return None
         criterion["threshold_pct"] = round(float(match.group(1)))
         criterion["basis"] = "FOB" if "FOB" in text or "free on board" in lowered else "EXW"
-    exception = lowered.split("except", 1)[1] if "except" in lowered else ""
     if exception and "that of the product" not in exception:  # that one is just CTH itself
-        headings = [a + b for a, b in _HEADING.findall(exception)]
+        headings = _excluded_headings(exception)
         if not headings:  # e.g. "except from non-originating active cathode materials"
             return None
         criterion["excluded_headings"] = headings

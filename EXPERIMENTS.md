@@ -1642,7 +1642,7 @@ Volvimos a puntuar la v4 con estos criterios, solo para comparar.
 - **Arreglamos el parser:**
   - la caducidad se mira por párrafos;
   - una condición que el motor no comprueba deja la regla para revisar a mano, en vez de leerla a
-    medias.
+    medias. Lo que esto cuesta en cobertura lo medimos en la entrada del 2026-11-17.
 - **Las reglas de los productos del banco no cambian** (comprobado), y hay tests con la regla real
   de vehículos.
 - **El SFT tendrá que quitarle al modelo de la fase 1 la costumbre de calcular el origen él mismo.**
@@ -2231,3 +2231,91 @@ bueno a las primeras posiciones, y si arregla la confusión entre acuerdos.
   - un reranker mayor (el de 4B no cabe en el portátil, pero sí en la DGX);
   - anotar en el dorado los fragmentos igual de válidos, para que la recuperación no penalice que
     el reranker elija otro que también responde.
+
+### 2026-11-17 · Fase 2 · Cobertura del motor: aplica el 75,7 % de las reglas oficiales, y ninguna del textil
+
+**Qué queríamos saber.** En la entrada del 2026-11-10 sobre el SFT para tool use decidimos que una
+condición que el motor no comprueba deja la regla entera para revisar a mano, en vez de leerla a
+medias y arriesgar un "originario" falso. La decisión era correcta, pero nunca medimos lo que
+cuesta: **¿en qué parte de las reglas reales puede ARCA dar un veredicto?** De eso depende que el
+sistema sirva para algo fuera de los problemas que genera el propio proyecto, donde la cobertura es
+del 100 % por construcción.
+
+**Qué hicimos.**
+- **`tool_use/rule_coverage.py`:** lee las reglas que ya descarga `tool_use.sft.fetch`
+  (`tool_use/sft/data/roo/`), las pasa por `parse_rules_of_origin` y cuenta cuántos conjuntos salen
+  con al menos un criterio en `criteria` y cuántos se van enteros a `not_machine_readable`.
+- **Clasificamos cada texto ilegible** por el motivo (operación de fabricación, condición, límite de
+  peso, exclusión de capítulo...), para separar lo que es una limitación del dominio de lo que es
+  una limitación nuestra.
+- **Medimos la ganancia de cada arreglo posible:** de los conjuntos que hoy no dan ningún criterio,
+  cuántos se recuperarían con cada patrón.
+- Sin modelo, sin GPU y sin red. `uv run python -m tool_use.rule_coverage`, deja
+  `reports/phase2_rule_coverage.json`. Diez tests en `tests/test_rule_coverage.py`.
+- **Datos:** 268 pares producto+acuerdo (los 67 códigos distintos del catálogo de 71 productos, por
+  los 4 acuerdos), 304 conjuntos de reglas. Ninguno falló al parsear.
+
+**Qué pasó.**
+
+Conjuntos con al menos un criterio aplicable: **230 de 304 (75,7 %)**.
+
+| Por par producto+acuerdo | |
+|---|---|
+| Todas las subdivisiones aplicables | 216 (80,6 %) |
+| Algunas aplicables | 9 (3,4 %) |
+| Ninguna: revisión manual | 43 (16,0 %) |
+
+| Acuerdo | | Capítulo SA | |
+|---|---|---|---|
+| UE-JP | 65/76 · 85,5 % | 84 maquinaria | 35/36 · **97,2 %** |
+| UE-KR | 58/71 · 81,7 % | 85 eléctrico | 41/44 · **93,2 %** |
+| TCA | 56/79 · 70,9 % | 87 vehículos | 33/39 · **84,6 %** |
+| CETA | 51/78 · 65,4 % | 94 muebles | 16/16 · **100 %** |
+| | | 61, 62, 63 textil | **0/40 · 0 %** |
+
+También al 100 %: 39, 33, 34, 40, 42, 44, 48, 69, 83, 90 y 96. Por debajo del 50 %: 18 (0/5),
+17 (33 %), 19 (40 %), 21 (50 %) y 64 (50 %).
+
+Por qué un texto no se puede aplicar, de los 182:
+
+| | Motivo | Qué es |
+|---|---|---|
+| 72 | Operación de fabricación | "knitting or crocheting and making-up", "spinning of natural fibres", "a chemical reaction, purification, mixing and blending" |
+| 67 | Condición | Un criterio que el motor sí entiende, con un `provided that` encima |
+| 17 | CTH con exclusión | "A change from any other heading, **except from heading 8503**" |
+| 4 | CTH *and* MaxNOM | Los dos criterios en un solo texto unido por "and" |
+| 16 | Varios | "must be originating" (5), exclusión de capítulo (4), valor de un material concreto (3), "however," (3), otro (1) |
+| 6 | Sin patrón | Reglas de textil sueltas, una redacción rara de CTSH y una excepción de cabezas de palo de golf |
+
+Y lo que daría arreglar cada patrón. De los **74 conjuntos que hoy no dan ningún criterio**:
+
+| Arreglo | Conjuntos que recupera | Qué necesita |
+|---|---|---|
+| CTH con exclusión | 11 | Nada nuevo: el motor ya tiene los códigos de los materiales |
+| CTH *and* MaxNOM | 1 | Partir el texto en dos |
+| `provided that` | 28 | El dato de la condición, que hay que pedirle al usuario |
+| **Los tres juntos** | **33** (7 se solapan) | **230 → 263 de 304 = 86,5 %** |
+
+**Qué concluimos.**
+- **La decisión del 2026-11-10 costó 28 conjuntos,** y sigue siendo la correcta: el fallo que evitó
+  era un "originario" falso. Pero ahora tiene precio medido y arreglo conocido.
+- **El orden de los arreglos cambia respecto a lo que suponíamos.** Los 67 `provided that` son el
+  grupo más grande, pero no el más barato: necesitan un dato que solo el usuario tiene, y por tanto
+  un bucle que lo pregunte, que es la fase 4. Los **17 CTH con exclusión no necesitan nada**, porque
+  la lista de materiales ya trae los códigos: es una comprobación negativa contra `criteria`. Van
+  primero.
+- **El veredicto de un `provided that` tiene que ser condicional,** no definitivo: "cumple el cambio
+  de partida, y es originario siempre que los materiales no originarios de la 1701 no superen el
+  30 %". Si se da por cumplido, volvemos al fallo del 2026-11-10.
+- **El textil no es un fallo del parser.** Sus reglas describen operaciones (hacer punto, hilar,
+  teñir), no el origen ni la clasificación de los materiales, y ARCA solo pregunta por la lista de
+  materiales con su código y su origen. Cubrirlo exige un tipo de criterio nuevo y datos nuevos, no
+  un parser mejor. Mientras no exista, lo honesto es que la herramienta lo diga, que es lo que hace.
+- **En los capítulos del dominio el motor cubre del 84,6 % al 100 %.** Son los de la propuesta, los
+  del generador de la fase 1 y los de la demo. La elección del tema aguanta la medida.
+- **CETA es el peor acuerdo (65,4 %)** porque sus reglas usan mucho el `provided that` con límites de
+  peso y de valor de un material concreto. Si se arregla ese patrón, es el que más sube.
+- **Aviso sobre la muestra.** Los 71 productos son el catálogo del SFT, elegido a propósito para ser
+  diverso y para incluir partidas con varias subdivisiones (textil, alimentación, vehículos). No es
+  una muestra aleatoria del arancel: los totales describen este catálogo, y lo que generaliza es el
+  desglose por capítulo.
