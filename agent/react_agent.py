@@ -13,12 +13,16 @@ history within budget.
 from __future__ import annotations
 
 import os
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 
 from agent.prompts import REACT_SYSTEM_PROMPT
 from api.schemas import AgentResponse, AgentStep
 from tool_use.registry import ToolRegistry, tool
 from tool_use.tools import default_registry
+
+
+_knowledge_base = None
 
 
 @tool
@@ -30,35 +34,88 @@ def final_answer(answer: str) -> str:
     """
     return answer
 
+def knowledge_base():
+    """The phase-3 retrievers, built once on first use (no generator model: the agent's
+    brain reads the passages itself)."""
+    global _knowledge_base
+    if _knowledge_base is None:
+        from rag.generate import RagPipeline
+
+        pipeline = RagPipeline.from_env()
+        pipeline.load(generator=False)
+        _knowledge_base = pipeline
+    return _knowledge_base
 
 @tool
 def search_knowledge_base(query: str, top_k: int = 5) -> str:
-    """Search the domain knowledge base and return the most relevant passages with their ids.
+    """Search the EU rules-of-origin knowledge base (agreement texts and official guides)
+    and return the most relevant passages with their ids.
+
+    Use it for questions about how the rules work (tolerance, cumulation, proofs of origin,
+    REX, deadlines...), not for the rule of a specific HS code or for an origin verdict:
+    those come from get_origin_rule and evaluate_origin.
 
     Args:
-        query: What to look for, phrased as a question.
-        top_k: How many passages to return.
+        query: What to look for, phrased as a question. Name the agreement if there is one.
+        top_k: How many passages to return (1 to 8).
     """
-    # Tu turno: call your phase-3 retriever and render hits as "[id] (source)\\ntext".
-    raise NotImplementedError("wire search_knowledge_base to rag/retriever.py")
+    from rag.generate import format_chunks
+
+    top_k = max(1, min(int(top_k), 8))
+    hits = knowledge_base().retrieve(query, top_k=top_k, retriever="hybrid")
+    if not hits:
+        return "No passage found."
+    return format_chunks(hits)
 
 
-BRAINS = {
-    "base": lambda: os.environ.get("ARCA_RLM_BASE_MODEL", "Qwen/Qwen3-0.6B"),
-    "rlm": lambda: os.environ.get("ARCA_RLM_ADAPTER", ""),
-    "thinking": lambda: os.environ.get("ARCA_THINKING_MODEL", "Qwen/Qwen3-1.7B"),
-}
+# ---------------------------------------------------------------------------------- brains
 
+# The three brains share one backbone, so that only one thing changes between them:
+#
+#   base      Qwen3-1.7B as released, answering without reasoning
+#   thinking  the same weights, reasoning in <think> before every step
+#   rlm       the same weights + our LoRA adapter (phase 1 + tool-use SFT of phase 2)
+#
+# The adapter is loaded once on top of the backbone and switched off for base and thinking
+# (``disable_adapter``), so one model sits in the 16 GB GPU and changing brain is free.
+
+DEFAULT_MODEL = "Qwen/Qwen3-1.7B"
+DEFAULT_ADAPTER = "tool_use/weights/sft_think"
+
+@dataclass(frozen=True)
+class Brain:
+    adapter: bool   # LoRA adapter active
+    thinking: bool   # enable_thinking
+
+def brains_from_env() -> dict[str, Brain]:
+    """``ARCA_AGENT_RLM_THINKING=0`` for an adapter trained without thinking (sft_nothink)."""
+    return {
+        "base": Brain(adapter=False, thinking=False),
+        "thinking": Brain(adapter=False, thinking=True),
+        "rlm": Brain(adapter=True, thinking=os.environ.get("ARCA_AGENT_RLM_THINKING", "1") == "1"),
+    }
 
 @dataclass
 class ReActAgent:
     registry: ToolRegistry = field(default_factory=default_registry)
     token_budget: int = 6000
     steps: list[AgentStep] = field(default_factory=list)
+    model_id: str = DEFAULT_MODEL
+    adapter_path: str | None = DEFAULT_ADAPTER
+    brains: dict[str, Brain] = field(default_factory=brains_from_env)
+    max_new_tokens: int | None = None  # per step; default 1024, or 3072 when thinking
+    model: object = None
+    tokenizer: object = None
 
     @classmethod
     def from_env(cls) -> ReActAgent:
-        agent = cls()
+        agent = cls(model_id=os.environ.get("ARCA_AGENT_MODEL") or DEFAULT_MODEL,
+            # Empty or "none": no adapter at all (then brain="rlm" is refused).
+            adapter_path=os.environ.get("ARCA_AGENT_ADAPTER", DEFAULT_ADAPTER),
+            max_new_tokens=int(os.environ.get("ARCA_AGENT_MAX_NEW_TOKENS") or 0) or None,
+        )
+        if agent.adapter_path in ("", "none"):
+            agent.adapter_path = None
         agent.registry.register(final_answer, search_knowledge_base)
         agent.load()
         return agent
