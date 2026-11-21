@@ -1,13 +1,18 @@
-"""The ReAct agent: Thought -> Action -> Observation, in a loop, with every tool you built.
+"""The ReAct agent behind POST /agent: Thought -> Action -> Observation, in a loop.
 
-This is where phases 1 to 3 meet. The brain is a model (``brain="base"``, your phase-1
-RLM with ``brain="rlm"``, or a thinking model with ``brain="thinking"``); the hands are the
-phase-2 registry plus ``search_knowledge_base`` from phase 3; the loop is yours to write.
+This is where phases 1 to 3 meet. The brain is Qwen3-1.7B in one of three modes (``base``,
+``thinking``, or ``rlm`` with our phase-2 adapter, which starts from the phase-1 GRPO); the
+hands are the phase-2 tools; the knowledge base of phase 3 is one more tool,
+``search_knowledge_base``; ``final_answer`` ends the loop.
 
-``ReActAgent.run`` is what ``POST /agent`` calls. Until it is implemented the endpoint
-answers 501. Reuse what you already have: ``tool_use.parser.parse_tool_calls`` to read
-the model's output, ``ToolRegistry.call`` to execute, ``ConversationMemory`` to keep the
-history within budget.
+The model understands the task, picks the tools, fills in their arguments and writes the
+answer. What can be checked by code is checked by code, and each check was added after a
+test where the model failed at it: calls written without tags are recovered; a call repeated
+with the same arguments is refused; values only the user can give (REX number, invoice,
+exporter) must appear in the task; the bill of materials must be the user's; the outcome of
+the actions is reported by the code, not by the model; the memory is summarised from the real
+calls, not by the model. The code refuses and explains, it never writes the call for the
+model. Configuration: the ARCA_AGENT_* variables (see .env.example).
 """
 
 from __future__ import annotations
@@ -18,7 +23,6 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as ToolTimeout
-
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import date
@@ -30,7 +34,6 @@ from tool_use.executor import CONFIRMATION_POLICIES, ToolLoop
 from tool_use.parser import ParsedOutput, parse_tool_calls
 from tool_use.registry import ToolRegistry, tool
 from tool_use.tools import default_registry
-
 
 _knowledge_base = None
 
@@ -135,33 +138,37 @@ _HS_IN_TEXT = re.compile(r"\b(\d{4})[.\s]?(\d{2})\b(?!\s*(?:€|EUR|eur|euros))"
 def _hs6(code) -> str:
     return re.sub(r"\D", "", str(code or ""))[:6]
 
-
 def bom_problems(name: str, arguments: dict, task: str) -> list[str]:
-    """Checks of the bill of materials of an evaluate_origin call against the task.
-
-    The model 'fixed' a 'materials add up to more than the ex-works price' error by dropping
-    the real materials and keeping the product itself as its only material: the engine
-    answered 'originating, 0 %' on a bill of materials that was not the user's. The engine
-    trusts what it gets, so the agent checks it: no material is the product itself, and every
-    HS code the user wrote for a material is in the list."""
+    """..."""  # (el mismo docstring)
     if name != "evaluate_origin":
         return []
     product = _hs6(arguments.get("product_hs_code"))
     exw = arguments.get("exw_price_eur") or 0
     materials = [m for m in arguments.get("materials") or [] if isinstance(m, dict)]
     problems = []
+    keep = []
     for m in materials:
         value = m.get("value_eur") or 0
         if product and _hs6(m.get("hs_code")) == product and exw and value >= exw:
             problems.append(
                 f"'{m.get('name')}' is the product itself (same HS code {product}, worth the "
-                "whole ex-works price): it is not one of its materials"
+                "whole ex-works price), not one of its materials: REMOVE it from materials"
             )
+        else:
+            keep.append(m.get("name"))
     listed = {_hs6(m.get("hs_code")) for m in materials}
     in_task = {a + b for a, b in _HS_IN_TEXT.findall(task)} - {product}
     missing = sorted(in_task - listed)
     if missing:
-        problems.append(f"materials the user listed are missing: HS {', '.join(missing)}")
+        problems.append(
+            f"materials the user listed are missing (HS {', '.join(missing)}): ADD them, "
+            "with the origin and value the user gave"
+        )
+    if problems and keep:
+        problems.append(
+            "call evaluate_origin again with the same arguments, keeping these materials: "
+            + ", ".join(f"'{k}'" for k in keep)
+        )
     return problems
 
 def _transient(error: str) -> bool:
@@ -219,7 +226,15 @@ class ReActAgent:
 
     @classmethod
     def from_env(cls) -> ReActAgent:
-        agent = cls(model_id=os.environ.get("ARCA_AGENT_MODEL") or DEFAULT_MODEL,
+        model_id = os.environ.get("ARCA_AGENT_MODEL") or DEFAULT_MODEL
+        if model_id.lower() in ("off", "none"):
+            # Like ARCA_TOOLS_MODEL=off in phase 2: the API answers 501 for /agent instead of
+            # loading two models and the RAG (the test suite sets it in conftest.py).
+            raise NotImplementedError(
+                f"Phase 4 is disabled: ARCA_AGENT_MODEL is 'off'. Set it to a model id, "
+                f"e.g. {DEFAULT_MODEL}."
+            )
+        agent = cls(model_id=model_id,
             # Empty or "none": no adapter at all (then brain="rlm" is refused).
             adapter_path=os.environ.get("ARCA_AGENT_ADAPTER", DEFAULT_ADAPTER),
             max_new_tokens=int(os.environ.get("ARCA_AGENT_MAX_NEW_TOKENS") or 0) or None,
@@ -240,6 +255,7 @@ class ReActAgent:
         """The backbone once, with the adapter on top, unmerged so that it can be switched off."""
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
+
         from rlm import disable_cudnn_attention
 
         disable_cudnn_attention()
@@ -502,15 +518,12 @@ class ReActAgent:
                         f"{fix}",
                     )
                 elif problems := bom_problems(call.name, call.arguments, task):
-                    # A bill of materials that is not the user's: refused before the engine
-                    # can give a verdict on it.
                     record = ToolCallRecord(
                         name=call.name,
                         arguments=call.arguments,
                         ok=False,
-                        error="not executed: " + "; ".join(problems) + ". Use the bill of "
-                        "materials exactly as the user gave it: each material once, with its "
-                        "own HS code, origin and value; the product itself is not a material.",
+                        error="not executed: " + "; ".join(problems) + ". The user's bill of "
+                        "materials is complete: do not ask the user for it.",
                     )
                 else:
                     confirmed = self.confirmed(call.name, call.arguments)
@@ -527,6 +540,18 @@ class ReActAgent:
                         )
                     else:
                         record = self.call_tool(call.name, call.arguments)
+                        if (
+                            not record.ok
+                            and call.name == "issue_origin_statement"
+                            and "is not a REX number" in (record.error or "")
+                        ):
+                            # The tool's own message (phase 2) says "leave it empty or ask them
+                            # for it", and the base brain asked. Same explicit hint as for an
+                            # invented REX: the model still writes the call.
+                            record.error += (
+                                ' Call issue_origin_statement again with "exporter_reference": "" '
+                                "(empty); if this consignment needs one, the tool will say so."
+                            )
                         if record.ok:
                             done[key] = step
                 if not record.ok and not (record.error or "").startswith("repeated call"):
