@@ -2525,11 +2525,91 @@ bajaron a la mitad: `base`, de 25 a 15 s por tarea; `thinking`, de 51 a 28 s.
 Comprobado sobre las 20 tareas: el control de moneda solo salta en las cinco que tienen importes en
 otra moneda (las tres de `cambio`, `larga-01` y los dong de `faltan-datos-02`), y la nota de códigos
 solo en `codigo-no-material-01`. Tests nuevos en
-`tests/test_agent.py`. Ejecución: `TAG=v1 sh agent/run_evaluations.sh`. Resultado en la entrada
-siguiente.
+`tests/test_agent.py`. Ejecución: `TAG=v1 sh agent/run_evaluations.sh`, que deja
+`reports/phase4_eval*_v1.json`. Resultado en la entrada siguiente.
 
 **Qué concluimos.** Dos avisos antes de medir:
 - **Los cambios de `tool_use/tools.py` llegan también a `/tools` (fase 2),** que se midió con las
   descripciones anteriores.
 - **La v1 está hecha mirando este mismo banco,** como las versiones de la fase 2. Lo que mejore no
   se puede leer como generalización sin un banco aparte.
+
+### 2026-11-22 · Fase 4 · v1 medida: los arreglos aciertan donde apuntaban, y dos agujeros del bucle que quedan
+
+**Qué queríamos saber.** Si los cinco arreglos de la v1 mejoran a los cinco cerebros, y si
+estropean algo que en la v0 funcionaba.
+
+**Qué hicimos.** `TAG=v1 sh agent/run_evaluations.sh` en la DGX, en las mismas condiciones que la
+v0 y con un solo proceso. Comparación con
+`uv run python -m agent.analyze <los seis JSON> --out reports/phase4_analysis_v0_v1.md`. Leímos las
+trazas de las tareas que empeoraron.
+
+**Qué pasó.**
+
+| | Éxito v0 → v1 | Aciertos limpios v0 → v1 | Argumentos exactos v0 → v1 | s/tarea v1 |
+|---|---|---|---|---|
+| `base` | 35 → **55 %** | 1 → 6 | 3 → 7 | 20 |
+| `thinking` | 40 → 50 % | 4 → 5 | 3 → 6 | 35 |
+| `rlm` con `sft_think` | 40 → 50 % | 7 → 9 | 10 → 13 | 27 |
+| `rlm` con `sft_nothink` | 45 → **60 %** | 9 → 9 | 11 → 10 | 26 |
+| `rlm` con `grpo_pps3` | 10 → 15 % | 1 → 2 | 0 → 1 | 58 |
+
+| Categoría (v1) | `base` | `thinking` | `sft_think` | `sft_nothink` | `grpo_pps3` |
+|---|---|---|---|---|---|
+| cambio (3) | 100 % | 100 % | 67 % | 33 % | 0 % |
+| veredicto (4) | 50 % | 25 % | 50 % | 75 % | 75 % |
+| declaracion (3) | 67 % | 67 % | 67 % | 100 % | 0 % |
+| conocimiento (3) | 0 % | 0 % | 0 % | 33 % | 0 % |
+| faltan_datos (2) | 50 % | 50 % | 50 % | 50 % | 0 % |
+| imposible (2) | 50 % | 50 % | 100 % | 50 % | 0 % |
+| vies (1) | 0 % | 0 % | 0 % | 100 % | 0 % |
+| codigo_no_material (1) | 100 % | 100 % | 100 % | 100 % | 0 % |
+| larga (1) | 100 % | 100 % | 0 % | 0 % | 0 % |
+
+- **Donde apuntaban los arreglos, la mejora se repite en casi todos los cerebros que llaman a
+  herramientas:**
+  - `codigo-no-material-01`: de 0 de 5 a 4 de 5. Solo falla `grpo_pps3`, que no llama a
+    `evaluate_origin`;
+  - `cambio`: `base` y `thinking` pasan de 0 de 3 a 3 de 3, y `sft_think` de 0 a 2. El control de
+    moneda les obliga a pasar por `get_exchange_rate` antes de evaluar;
+  - "lista de materiales rechazada": de 1-4 tareas por cerebro a 0;
+  - ninguna respuesta vacía. Las 5 tareas en que `base` se atasca terminan ahora con el último
+    error explicado, y siguen contando como fallo.
+- **Los errores de origen de los materiales de `base` bajan de 11 a 5** (de 16 a 10 en `thinking`).
+  No lo buscábamos. Creemos que es por el ejemplo `'850760'` que quitamos, o por los pasos extra,
+  pero no lo hemos comprobado.
+- **La memoria se comprime por primera vez:** en 2 tareas de `base` y de `thinking`, de unos 6.200 y
+  7.200 tokens a unos 4.600 y 4.900. Con más pasos por tarea (de 3,0 a 4,0 en `base`), las
+  conversaciones pasan de los 6.000.
+- **Tres tareas que empeoraron, y ninguna por la v1:**
+  - **`sft_nothink` en `cambio-01` (de 3 pasos a 2):** no llama a ninguna herramienta. Escribe en
+    texto "Action: call `evaluate_origin` with {…}", con `150 / 0.9153` dentro del JSON y un tipo
+    de cambio inventado y al revés. Sin etiquetas y con un JSON que no es válido, el bucle no puede
+    recuperar la llamada, y ese texto queda como respuesta;
+  - **`base` en `vies-01` (de acierto en 5 pasos a 10 pasos sin respuesta):** tras VIES escribe 9
+    veces seguidas el mismo JSON roto (`Expecting ',' delimiter`). El control de llamadas repetidas
+    no lo ve, porque una llamada que no se puede leer no tiene clave con la que compararla, así que
+    agota los pasos. El agujero ya estaba en la v0;
+  - **`base` en `faltan-datos-02`:** el control de moneda funciona. El modelo convierte los 650.000
+    como si fueran **KRW**, y sin el control habría evaluado con 434 € inventados. El control lo
+    bloquea porque los dong siguen sin convertir. Pero el modelo no intenta nunca la conversión en
+    VND, así que no recibe el error de "el BCE no publica ese tipo" ni pide el valor en euros. Falla
+    en los cinco cerebros.
+- **Lo que no cambia:** conocimiento sigue en 0 % (salvo una de `sft_nothink`), `imposible-02` pasa
+  en tres cerebros sin que la v1 lo tocara, y los SFT siguen sin llamar a `final_answer` (18 de 20).
+
+**Qué concluimos.**
+- **La v1 se queda.** Las subidas de 10 a 20 puntos mezclan el efecto de los arreglos con el ruido
+  de la v0 (la misma configuración varió entre 35 % y 50 %). Pero `codigo-no-material-01` mejora en los cuatro
+  cerebros que llaman a herramientas, y `cambio` en tres de los cuatro, justo donde apuntaban los
+  arreglos. Eso no lo produce el azar.
+- **`base` es el que más gana (de 1 a 6 aciertos limpios):** los arreglos tapan errores que los SFT
+  ya no cometían. Los SFT siguen por delante en aciertos limpios (9 y 9) y en argumentos exactos
+  (13 y 10 de 17, frente a 7).
+- **Adaptador por defecto: `sft_nothink`.** Tiene el mejor éxito (60 %), empata con `sft_think` en
+  aciertos limpios, tarda lo mismo y es el que sirve `/tools`. Lo confirmamos con las repeticiones.
+- **Dos agujeros del bucle, sin arreglar todavía:** un JSON roto repetido no cuenta como llamada
+  repetida, y una llamada escrita como "Action: … with {…}" no se recupera. Los dejamos para no
+  cambiar el código antes de repetir las medidas.
+- **Siguiente:** repetir la v1 dos veces más para dar media y rango, y medir la memoria y el agente
+  de código.

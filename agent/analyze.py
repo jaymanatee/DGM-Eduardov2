@@ -166,6 +166,57 @@ def load_runs(paths: list[Path]) -> dict[str, dict]:
     return runs
 
 
+def configuration(run: str) -> str:
+    """'eval_v1b:rlm' -> 'eval:rlm': the run without its TAG, to group repetitions."""
+    stem, _, brain = run.partition(":")
+    return f"{re.sub(r'_v\w+$', '', stem)}:{brain}"
+
+
+def clean_successes(rows: list[dict]) -> int:
+    """Successes, minus those that pass with an evaluate_origin call unlike the reference."""
+    return sum(
+        1
+        for r in rows
+        if r["correct"] and not ((c := argument_check(r)) and c["called"] and not c["exact"])
+    )
+
+
+def repetitions(runs: dict[str, dict], tag: str) -> str:
+    """Mean and range of the runs of each configuration whose TAG starts with ``tag``
+    (v1, v1b, v1c...). Empty if no configuration has two runs."""
+    groups: dict[str, list[dict]] = {}
+    for name, res in runs.items():
+        stem = name.partition(":")[0]
+        if re.search(rf"_{tag}\w*$", stem):
+            groups.setdefault(configuration(name), []).append(res)
+    groups = {k: v for k, v in groups.items() if len(v) > 1}
+    if not groups:
+        return ""
+
+    def spread(values: list[float], fmt) -> str:
+        return f"{fmt(sum(values) / len(values))} ({fmt(min(values))}-{fmt(max(values))})"
+
+    rows = []
+    for name, results in groups.items():
+        rows.append(
+            [
+                f"`{name}`",
+                len(results),
+                spread([r["success_rate"] for r in results], _pct),
+                spread([clean_successes(r["rows"]) for r in results], lambda x: f"{x:.1f}"),
+                spread([r.get("mean_seconds", 0) for r in results], lambda x: f"{x:.0f}"),
+            ]
+        )
+    return "\n".join(
+        [
+            f"## Repeticiones ({tag}*): media (mínimo-máximo)",
+            "",
+            _table(["Configuración", "Ejecuciones", "Éxito", "Aciertos limpios", "s/tarea"], rows),
+            "",
+        ]
+    )
+
+
 def _pct(x: float) -> str:
     return f"{100 * x:.0f} %"
 
@@ -320,13 +371,19 @@ def main() -> None:
     )
     parser.add_argument("files", nargs="*", type=Path)
     parser.add_argument("--out", type=Path, default=REPORTS / "phase4_analysis.md")
+    parser.add_argument(
+        "--repeated", metavar="TAG", help="add mean and range over the runs tagged TAG, TAGb, TAGc..."
+    )
     args = parser.parse_args()
     files = args.files or sorted(
         p for p in REPORTS.glob("phase4_*.json") if "smoke" not in p.name
     )
     if not files:
         parser.error("no reports/phase4_*.json yet")
-    text = report(load_runs(files))
+    runs = load_runs(files)
+    text = report(runs)
+    if args.repeated:
+        text += "\n" + repetitions(runs, args.repeated)
     args.out.write_text(text + "\n", encoding="utf-8")
     print(text)
 

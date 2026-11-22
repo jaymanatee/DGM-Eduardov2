@@ -324,3 +324,17 @@ def test_rescore_applies_the_current_checks(tmp_path):
     out.write_text(json.dumps({"base": {"rows": [row]}}))
     results = rescore(out, list(TASKS.values()))
     assert results["base"]["rows"][0]["correct"] and results["base"]["success_rate"] == 1.0
+
+
+def test_repetitions_group_the_tagged_runs():
+    from agent.analyze import configuration, repetitions
+
+    assert configuration("eval_rlm_sft_nothink_v1b:rlm") == "eval_rlm_sft_nothink:rlm"
+    row = {**TASKS["veredicto-01"], "correct": True, "steps": [], "n_steps": 2}
+    runs = {
+        "eval_v1:base": {"success_rate": 0.5, "mean_seconds": 20, "rows": [row]},
+        "eval_v1b:base": {"success_rate": 0.6, "mean_seconds": 22, "rows": [row]},
+        "eval:base": {"success_rate": 0.35, "mean_seconds": 15, "rows": [row]},  # v0: left out
+    }
+    text = repetitions(runs, "v1")
+    assert "| `eval:base` | 2 | 55 % (50 %-60 %) |" in text
