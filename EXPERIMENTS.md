@@ -2613,3 +2613,140 @@ trazas de las tareas que empeoraron.
   cambiar el código antes de repetir las medidas.
 - **Siguiente:** repetir la v1 dos veces más para dar media y rango, y medir la memoria y el agente
   de código.
+
+### 2026-11-22 · Fase 4 · Tres ejecuciones de la v1: los cerebros empatan en éxito, y el adaptador `sft_think` rellena mejor la llamada
+
+**Qué queríamos saber.** Si las diferencias entre cerebros de la v1 aguantan al repetir, y qué
+adaptador queda por defecto. En la v0, la misma configuración había variado entre el 35 % y el 50 %.
+
+**Qué hicimos.** Repetir dos veces más la v1, con el mismo código y en las mismas condiciones, un
+proceso cada vez: `TAG=v1b` y `TAG=v1c` con `agent/run_evaluations.sh`. Después,
+`uv run python -m agent.analyze --repeated v1 --out reports/phase4_analysis_final.md`, que agrupa
+las tres ejecuciones de cada configuración.
+
+**Qué pasó.** Media de las tres ejecuciones (mínimo-máximo):
+
+| | Éxito | Aciertos limpios | Argumentos exactos | s/tarea |
+|---|---|---|---|---|
+| `base` | 52 % (50-55) | 5,3 (5-6) | 7/17 en las tres | 19 |
+| `thinking` | 53 % (50-55) | 5,3 (5-6) | 6/17 en las tres | 35 |
+| **`rlm` con `sft_think`** | **55 % (50-60)** | **10,0 (9-11)** | **13/17 en las tres** | 28 |
+| `rlm` con `sft_nothink` | 57 % (50-60) | 9,0 (9-9) | 10/17 en las tres | 25 |
+| `rlm` con `grpo_pps3` | 15 % (15-15) | 2,0 (2-2) | 1/17 en las tres | 57 |
+
+- **Con la v1, las repeticiones varían menos que en la v0:** como mucho 10 puntos (2 tareas)
+  entre ejecuciones de la misma configuración, y `grpo_pps3` sale idéntico las tres veces. Los
+  argumentos exactos no cambian en ninguna configuración.
+- **En éxito, los cuatro cerebros que llaman a herramientas quedan dentro del ruido:** del 52 % al
+  57 %, con rangos que se solapan.
+- **En aciertos limpios y argumentos, los dos SFT están claramente por delante:** 9-10 aciertos
+  limpios frente a unos 5, y 10-13 llamadas exactas de 17 frente a 6-7. La diferencia se repite en
+  las tres ejecuciones.
+- **`sft_think` rellena mejor la llamada que `sft_nothink`:** 13 llamadas exactas de 17 frente a
+  10, en las tres ejecuciones. El error que distingue a `sft_nothink` es el precio franco fábrica
+  (3 veces en cada ejecución).
+- **`thinking` tarda casi el doble que `base` (35 frente a 19 s) para el mismo resultado.**
+
+**Qué concluimos.**
+- **Cambiamos la decisión provisional de la entrada anterior: el agente se queda con `sft_think`,**
+  que es el adaptador que ya tiene por defecto (`ARCA_AGENT_ADAPTER` en `.env.example`), así que no
+  hay que tocar nada. En éxito empata con `sft_nothink`; en aciertos limpios va un poco por delante
+  (10 frente a 9), y en llamadas exactas, claramente (13 frente a 10, en las tres ejecuciones), a
+  cambio de 3 s más por tarea. `/tools` sigue con `sft_nothink`: allí lo decidió el test sintético
+  de 200 casos de la fase 2, que es otra medida.
+- **Ni el porcentaje de éxito ni una sola ejecución bastaban para decidir.** Con una sola
+  ejecución, habríamos elegido `sft_nothink` por un 60 % que la repetición no sostiene.
+- **La pregunta del README, con tres ejecuciones:** el modelo de la fase 1 (`grpo_pps3`) sigue en el
+  15 %, muy por debajo del base (52 %). Entrenar para razonar de cabeza empeora al agente; el SFT de
+  herramientas lo recupera, y lo que aporta es sobre todo rellenar bien la llamada.
+
+### 2026-11-22 · Fase 4 · Memoria: en estas tareas casi nunca actúa, y comprimir apenas ahorra
+
+**Qué queríamos saber.** El README pide medir la memoria con varios presupuestos. Qué pasa con el
+agente si no se comprime nunca, con el presupuesto por defecto (6.000 tokens) y con uno bajo que
+obligue a comprimir.
+
+**Qué hicimos.** `rlm` con `sft_think` en las 20 tareas, con `ARCA_AGENT_TOKEN_BUDGET` a 0 (sin
+compresión) y a 4.000, una ejecución cada uno (`agent/run_evaluations.sh mem0 mem4000`, que dejan
+`reports/phase4_memory_0_v1.json` y `reports/phase4_memory_4000_v1.json`). Las tres ejecuciones de
+la v1 sirven de comparación con 6.000. Elegimos 4.000 porque el prompt de sistema, con los esquemas
+de las herramientas, ocupa por sí solo unos 3.000-3.400 tokens.
+
+**Qué pasó.**
+
+| Presupuesto | Ejecuciones | Éxito | Tareas con compresión | Tokens antes → después (media) |
+|---|---|---|---|---|
+| 0 (sin compresión) | 1 | 70 % | 0 | — |
+| 6.000 (por defecto) | 3 | 55 % (50-60) | 0 | — |
+| 4.000 | 1 | 55 % | 6 (7 compresiones) | 4.346 → 4.080 |
+
+- **Con 6.000 tokens, la memoria de `rlm` no se comprime en ninguna tarea:** sus conversaciones
+  tienen de 3 a 4 pasos y no llegan al límite. En la v1 solo se comprime con `base` y `thinking`, que
+  dan más pasos: en 1 o 2 tareas por ejecución, de unos 6.200 y 7.200 tokens a unos 4.600 y 4.900.
+- **Así que con 0 y con 6.000 se ejecuta exactamente el mismo camino del código.** El 70 % frente al
+  55 % no lo produce la memoria: son cuatro ejecuciones de lo mismo que dan 50 %, 55 %, 60 % y 70 %.
+  Es el ruido de una sola ejecución, más amplio de lo que mostraron las tres de la v1.
+- **Con 4.000 sí comprime (en 6 tareas), pero ahorra poco:** de 4.346 a 4.080 tokens de media. Casi
+  todo el contexto es el prompt de sistema, que no se toca, y las últimas observaciones, que se
+  conservan. El éxito queda en el 55 %, igual que con 6.000. De las cuatro tareas que cambian respecto a la
+  v1, tres (`larga-01`, `declaracion-02` y `veredicto-01`) también cambian entre ejecuciones sin
+  compresión. La cuarta, `veredicto-03`, solo pasa con 4.000 tokens, una vez: con una sola
+  ejecución no se distingue del ruido.
+
+**Qué concluimos.**
+- **En este banco, la memoria no decide nada.** Las tareas son demasiado cortas para que el contexto
+  se llene, y cuando se fuerza, lo que se puede comprimir es poco.
+- **Lo que pesa en el contexto son los esquemas de las herramientas** en el prompt de sistema. Si
+  el contexto fuera un problema, recortarlos ahorraría más que cualquier política de memoria.
+- **Para medir de verdad la memoria haría falta otro tipo de tarea:** conversaciones largas, varias
+  búsquedas en la base de conocimiento o muchos materiales. No lo hemos hecho.
+
+### 2026-11-22 · Fase 4 · El `CodeAgent` de smolagents: 15 % frente al 52 % de nuestro bucle JSON
+
+**Qué queríamos saber.** El contraste que pide el README: el mismo modelo escribiendo acciones en
+Python (CodeAct, Wang et al., 2024) en lugar de una llamada JSON por paso. CodeAct dice que el
+código encadena varias llamadas en un paso y necesita menos pasos.
+
+**Qué hicimos.** `agent/code_agent.py` envuelve nuestras seis herramientas como `Tool` de
+smolagents 1.26.0. Las llamadas pasan por el mismo `registry.call`, con la misma validación, y
+los parámetros se describen con los `Args:` de cada docstring. Usa el mismo Qwen3-1.7B, las mismas
+reglas del dominio como `instructions` y `max_steps=10`. Lo que no tiene son los controles de
+nuestro bucle (llamadas repetidas, valores inventados, códigos que no están, moneda sin convertir).
+Es smolagents tal como viene. Dos cerebros: `base` y `rlm` con `sft_think`. Una ejecución
+(`agent/run_evaluations.sh code`, que deja `reports/phase4_codeagent_v1.json`) y una prueba corta
+antes.
+
+**Qué pasó.**
+
+| | Éxito | Pasos | Tokens | s/tarea | Argumentos exactos | Tareas sin respuesta |
+|---|---|---|---|---|---|---|
+| JSON, `base` (v1, media de 3) | 52 % | 3,9 | unos 16.000 | 19 | 7/17 | 4-5 |
+| **Código, `base`** | **15 %** | 6,5 | 46.551 | 58 | 1/17 | 8 |
+| JSON, `rlm` con `sft_think` (v1, media de 3) | 55 % | 4,0 | unos 15.800 | 28 | 13/17 | 0 |
+| **Código, `rlm` con `sft_think`** | **0 %** | 10,8 | 70.915 | 118 | 2/17 | 19 |
+
+- **El código sí encadena llamadas:** en 10 pasos de `base` hay varias llamadas en el mismo bloque.
+  Pero no le compensa. Usa casi el doble de pasos que el JSON, tres veces más tokens y el triple de
+  tiempo.
+- **Rellena peor los argumentos.** En la prueba corta, el modelo escribió todos los parámetros de
+  `evaluate_origin`, también los opcionales, con valores de relleno (`fob_price_eur=0`), y la
+  validación lo rechazó. En la ejecución completa, `base` acumula 44 errores en el origen de un
+  material y 39 en la declaración del proveedor, repartidos entre llamadas repetidas.
+- **El adaptador SFT no sabe escribir código:** 0 de 20, y 19 tareas sin respuesta al agotar los
+  pasos. Se entrenó con llamadas JSON; el formato de smolagents le es ajeno.
+- **Sus 3 aciertos (`base`):** `conocimiento-01`, que no acierta ninguna configuración JSON (base de
+  conocimiento más tipo de cambio en un solo bloque), `imposible-02` y `larga-01`, este con la
+  llamada mal.
+
+**Qué concluimos.**
+- **Con un modelo de 1,7B, las acciones en código no mejoran al JSON: lo empeoran mucho** (15 %
+  frente al 52 % con el mismo modelo). La ventaja que describe CodeAct, varias llamadas por paso,
+  aparece, pero el modelo no escribe código correcto con la fiabilidad suficiente para
+  aprovecharla. Los resultados de CodeAct son con modelos mucho mayores.
+- **La comparación no es solo de formato.** Nuestro bucle JSON lleva controles que se escribieron
+  mirando fallos de este modelo, y el `CodeAgent` no. Parte de la diferencia es eso. La otra parte
+  se ve sin controles: la prueba corta ya muestra el relleno de parámetros y el adaptador SFT no
+  sirve para código.
+- **Lo que sí sugiere `conocimiento-01`:** buscar y convertir en un mismo bloque es lo que más le
+  cuesta al bucle JSON (0 de 22 ejecuciones), y el código lo resolvió una vez. Con un modelo
+  mayor, el formato de código podría ganar en esas tareas.
