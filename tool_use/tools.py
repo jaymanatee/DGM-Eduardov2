@@ -185,7 +185,10 @@ def _file_safe(value: Any) -> Any:
 HsCode = Annotated[
     str,
     BeforeValidator(_hs6),
-    Field(pattern=r"^\d{6}$", description="HS subheading, 6 digits, e.g. '850760'"),
+    Field(
+        pattern=r"^\d{6}$",
+        description="HS subheading: the first 6 digits of the code the user wrote, without dots",
+    ),
 ]
 Operation = Literal[(*SUFFICIENT_OPERATIONS, *INSUFFICIENT_OPERATIONS)]
 
@@ -523,8 +526,8 @@ def get_origin_rule(hs_code: HsCode, agreement: Agreement) -> dict:
     the rule by itself: only tell it the 'number' of the rule set that matches the product.
 
     Args:
-        hs_code: HS code of the final product, 6 digits, e.g. '850760' (longer codes are cut
-            to 6 digits).
+        hs_code: HS code of the final product as the user wrote it, 6 digits (longer codes
+            are cut to 6 digits).
         agreement: TCA (United Kingdom), UE-JP (Japan), UE-KR (South Korea) or CETA (Canada).
     """
     rule = copy.deepcopy(_rule_of_origin(hs_code, agreement))
@@ -810,7 +813,9 @@ def evaluate_origin(
     if total > exw_price_eur:
         raise ValueError(
             f"the materials add up to {total:.2f} EUR, more than the ex-works price "
-            f"({exw_price_eur:.2f} EUR): list each material once, with the values the user gave"
+            f"({exw_price_eur:.2f} EUR): list each material once, with the values the user "
+            "gave in euros. A value the user gave in another currency must be converted first "
+            "with get_exchange_rate (use its amount_eur)"
         )
     chosen = official_rule_set(agreement, product_hs_code, subdivision)
     criteria = chosen["criteria"]

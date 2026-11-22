@@ -10,6 +10,8 @@ from agent.react_agent import (
     ReActAgent,
     _transient,
     bom_problems,
+    foreign_amounts,
+    unlisted_codes,
     clean_answer,
     final_answer,
     invented_arguments,
@@ -103,14 +105,15 @@ def test_bom_refuses_the_product_as_its_own_material():
     assert "'motor', 'aspas'" in problems[-1]  # which materials to keep
 
 
-def test_bom_refuses_dropped_materials_and_ignores_prices():
-    problems = bom_problems("evaluate_origin", {**EVALUATION, "materials": [FAN]}, TASK)
-    assert any("841490, 850140" in p for p in problems)
+def test_codes_not_in_the_call_are_listed_and_prices_are_not():
+    """v1: no longer a refusal (bom_problems), a note: see test_unlisted_code_is_a_note."""
+    assert bom_problems("evaluate_origin", {**EVALUATION, "materials": [MOTOR]}, TASK) == []
+    assert unlisted_codes("evaluate_origin", {**EVALUATION, "materials": [MOTOR]}, TASK) == [
+        "841490"
+    ]
     # A price that looks like a code is not a material the user listed.
     priced = TASK + " Otro gasto: 1200.50 €."
-    assert (
-        bom_problems("evaluate_origin", {**EVALUATION, "materials": [MOTOR, BLADES]}, priced) == []
-    )
+    assert unlisted_codes("evaluate_origin", {**EVALUATION, "materials": [MOTOR, BLADES]}, priced) == []
 
 
 def test_invented_arguments_are_the_ones_not_in_the_task():
@@ -260,6 +263,9 @@ def test_a_failed_call_is_not_run_twice():
     assert "not given by the user" in r.steps[0].observation
     assert "repeated call" in r.steps[1].observation and "repeated call" in r.steps[2].observation
     assert not r.succeeded  # stuck: cut after the second repetition
+    # v1: the user still learns why, from the last error, instead of an empty answer.
+    assert r.final_answer.startswith("No he podido completar la tarea")
+    assert "issue_origin_statement" in r.final_answer
 
 
 def test_invented_rex_refused_then_empty_rex_issues_and_the_report_says_so():
@@ -334,3 +340,82 @@ def test_summary_is_built_from_the_real_calls():
         '- get_origin_rule({"hs_code": "841459"}) -> ok: {"rule": "CTSH"}',
         '- slow_tool({"x": "a"}) -> error: time-out',
     ]
+
+
+# ------------------------------------------------------------------------- v1 of the loop
+
+
+@tool
+def evaluate_origin(
+    agreement: str, product_hs_code: str, exw_price_eur: float, materials: list
+) -> dict:
+    """Origin verdict.
+
+    Args:
+        agreement: The agreement.
+        product_hs_code: The product.
+        exw_price_eur: The price.
+        materials: The materials.
+    """
+    return {"originating": True, "pct_non_originating": 47.2}
+
+
+@tool
+def get_exchange_rate(currency: str, month: str = "", amount: float = 0) -> dict:
+    """Exchange rate.
+
+    Args:
+        currency: The currency.
+        month: The month.
+        amount: The amount.
+    """
+    return {"currency": currency, "amount_eur": round(amount / 1.15, 2)}
+
+
+def scripted_v1(*outputs: str) -> ReActAgent:
+    agent = scripted(*outputs)
+    agent.registry.register(evaluate_origin, get_exchange_rate)
+    return agent
+
+
+FORMER = TASK + " Antes lo clasificábamos en la 8414.51."
+FULL = {**EVALUATION, "materials": [MOTOR, BLADES]}
+
+
+def test_unlisted_code_is_a_note_not_a_refusal():
+    r = scripted_v1(call("evaluate_origin", **FULL), call("final_answer", answer="Sí.")).run(
+        FORMER, brain="base"
+    )
+    assert '"pct_non_originating": 47.2' in r.steps[0].observation  # it ran
+    assert "Note: the task also mentions HS 841451" in r.steps[0].observation
+    assert r.succeeded and r.final_answer == "Sí."
+
+
+def test_foreign_amounts():
+    assert foreign_amounts("partes compradas por 150 USD y 2,400 CNY; precio 600 €") == {
+        "USD",
+        "CNY",
+    }
+    assert foreign_amounts("precio franco fábrica 1.800 EUR, 1.880 € FOB") == set()
+    assert foreign_amounts("difusores por 650.000 VND") == {"VND"}
+
+
+def test_evaluation_waits_for_the_conversion_and_then_runs():
+    task = TASK + " Las aspas se pagaron 29 USD en septiembre de 2026."
+    r = scripted_v1(
+        call("evaluate_origin", **FULL),
+        call("get_exchange_rate", currency="USD", month="2026-09", amount=29),
+        call("evaluate_origin", **FULL),  # same arguments: not refused as a repeated call
+        call("final_answer", answer="Sí."),
+    ).run(task, brain="base")
+    assert "the task gives amounts in USD" in r.steps[0].observation
+    assert '"pct_non_originating": 47.2' in r.steps[2].observation
+    assert r.succeeded
+
+
+def test_unconverted_evaluation_repeated_gets_stuck():
+    task = TASK + " Las aspas se pagaron 29 USD."
+    again = call("evaluate_origin", **FULL)
+    r = scripted_v1(again, again, again, again).run(task, brain="base")
+    assert not r.succeeded and r.n_steps == 3
+    assert "USD" in r.final_answer and r.final_answer.startswith("No he podido")

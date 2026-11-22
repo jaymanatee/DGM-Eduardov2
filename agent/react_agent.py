@@ -33,7 +33,7 @@ from api.schemas import AgentAction, AgentResponse, AgentStep, ToolCallRecord
 from tool_use.executor import CONFIRMATION_POLICIES, ToolLoop
 from tool_use.parser import ParsedOutput, parse_tool_calls
 from tool_use.registry import ToolRegistry, tool
-from tool_use.tools import default_registry
+from tool_use.tools import ECB_CURRENCIES, default_registry
 
 _knowledge_base = None
 
@@ -139,7 +139,10 @@ def _hs6(code) -> str:
     return re.sub(r"\D", "", str(code or ""))[:6]
 
 def bom_problems(name: str, arguments: dict, task: str) -> list[str]:
-    """..."""  # (el mismo docstring)
+    """Blocking problems of an evaluate_origin call: a material with the product's own HS code
+    worth the whole ex-works price (the model copied the product into its own bill of
+    materials). Codes of the task missing from the materials are not blocking: see
+    ``unlisted_codes``."""
     if name != "evaluate_origin":
         return []
     product = _hs6(arguments.get("product_hs_code"))
@@ -150,20 +153,17 @@ def bom_problems(name: str, arguments: dict, task: str) -> list[str]:
     for m in materials:
         value = m.get("value_eur") or 0
         if product and _hs6(m.get("hs_code")) == product and exw and value >= exw:
+            # v1: not just "remove it". In veredicto-04 (lamps bought finished and repacked)
+            # the bought lamp IS a material, and removing it would leave only EU packaging:
+            # a false "originating". There the error was the ex-works price (purchase price).
             problems.append(
-                f"'{m.get('name')}' is the product itself (same HS code {product}, worth the "
-                "whole ex-works price), not one of its materials: REMOVE it from materials"
+                f"'{m.get('name')}' has the product's own HS code ({product}) and is worth the "
+                "whole ex-works price. If it is the product itself, REMOVE it from materials. If "
+                "the user bought it finished and only packs, labels or cleans it, keep it, use "
+                "as exw_price_eur the price at which the user sells, and pass 'operations'"
             )
         else:
             keep.append(m.get("name"))
-    listed = {_hs6(m.get("hs_code")) for m in materials}
-    in_task = {a + b for a, b in _HS_IN_TEXT.findall(task)} - {product}
-    missing = sorted(in_task - listed)
-    if missing:
-        problems.append(
-            f"materials the user listed are missing (HS {', '.join(missing)}): ADD them, "
-            "with the origin and value the user gave"
-        )
     if problems and keep:
         problems.append(
             "call evaluate_origin again with the same arguments, keeping these materials: "
@@ -171,10 +171,63 @@ def bom_problems(name: str, arguments: dict, task: str) -> list[str]:
         )
     return problems
 
+
+def unlisted_codes(name: str, arguments: dict, task: str) -> list[str]:
+    """HS codes written in the task that are neither the product nor a material of the call.
+
+    Until v0 this refused the call. It also refused right calls: a task that mentions a former
+    classification ("lo tenía clasificado en la 8418.21") or a product code the model got
+    wrong, where the "missing material" was the real product. Now it is a note added to the
+    observation, and the model decides."""
+    if name != "evaluate_origin":
+        return []
+    product = _hs6(arguments.get("product_hs_code"))
+    listed = {
+        _hs6(m.get("hs_code")) for m in arguments.get("materials") or [] if isinstance(m, dict)
+    }
+    return sorted({a + b for a, b in _HS_IN_TEXT.findall(task)} - listed - {product})
+
+
+def unlisted_note(codes: list[str]) -> str:
+    return (
+        f"\nNote: the task also mentions HS {', '.join(codes)}, which is not in this call (neither "
+        "the product nor a material). If it is a material the user listed, call evaluate_origin "
+        "again adding it with the origin and value the user gave. If it is the product, fix "
+        "product_hs_code. If it is something else (a former classification, another product), "
+        "ignore this note."
+    )
+
+
+# Currencies an amount can come in: the ECB ones plus others users write. An amount in one of
+# them must go through get_exchange_rate before evaluate_origin (v1: in cambio-01 the model
+# used 150 USD as 150 EUR, and the verdict flipped).
+FOREIGN_CURRENCIES = ECB_CURRENCIES | frozenset(
+    "VND ARS CLP COP PEN UYU EGP MAD TND AED SAR PKR BDT TWD RUB UAH NGN KES".split()
+)
+_AMOUNT = re.compile(r"\d[\d.,]*\s*([A-Z]{3})\b")
+
+
+def foreign_amounts(task: str) -> set[str]:
+    """Currencies other than the euro in which the task gives an amount ("150 USD")."""
+    return {c for c in _AMOUNT.findall(task) if c in FOREIGN_CURRENCIES}
+
+
 def _transient(error: str) -> bool:
     """A failure that may not happen again with the same arguments: the agent's time-out or a
     service that did not answer (ServiceUnavailable, raised by tools._http_get)."""
     return error.startswith("time-out") or "ServiceUnavailable" in error
+
+def _payload_error(observation: str) -> str | None:
+    """The 'error' of a step's observation (the phase-2 JSON, maybe after notes in brackets)."""
+    start = observation.find("{")
+    if start < 0:
+        return None
+    try:
+        payload, _ = json.JSONDecoder().raw_decode(observation, start)
+    except json.JSONDecodeError:
+        return None
+    return payload.get("error") if isinstance(payload, dict) else None
+
 
 def clean_answer(text: str) -> str:
     """A plain-text answer without the leftovers seen in tests: a closing </think> that was
@@ -428,6 +481,21 @@ class ReActAgent:
         retried: set[str] = set()  # transient failures already retried once
         repeats = 0
         max_repeats = 2  # a third identical call means the loop is stuck
+        to_convert = foreign_amounts(task)  # currencies with an amount in the task
+        converted: set[str] = set()  # currencies get_exchange_rate has converted in this run
+        refused_unconverted: set[str] = set()  # evaluate_origin calls refused for that
+
+        def stuck_answer() -> str:
+            """v1: when the loop ends without any answer from the model, the user still learns
+            why (in v0 the answer was empty in 6 of 20 tasks of the base brain)."""
+            last = next((a for a in reversed(steps) if a.action is not None), None)
+            error = ""
+            if last is not None and last.observation:
+                error = (_payload_error(last.observation) or "")[:400]
+            return (
+                "No he podido completar la tarea. "
+                + (f"Último error de {last.action.name}: {error}" if error else "")
+            ).strip()
 
         def response(answer: str, n_steps: int, succeeded: bool = True) -> AgentResponse:
             report = self.action_report(actions)
@@ -517,6 +585,21 @@ class ReActAgent:
                         f"values must be copied from the task, never made up). Nothing was done. "
                         f"{fix}",
                     )
+                elif call.name == "evaluate_origin" and (missing := to_convert - converted):
+                    # v1: amounts in another currency must be converted first.
+                    if key in refused_unconverted:
+                        repeats += 1
+                    refused_unconverted.add(key)
+                    record = ToolCallRecord(
+                        name=call.name,
+                        arguments=call.arguments,
+                        ok=False,
+                        error=f"not executed: the task gives amounts in {', '.join(sorted(missing))}"
+                        ". Convert each one first with get_exchange_rate (currency, the month the "
+                        "user names, amount) and use its amount_eur as value_eur. If "
+                        "get_exchange_rate cannot convert a currency, call final_answer asking "
+                        "the user for that value in euros.",
+                    )
                 elif problems := bom_problems(call.name, call.arguments, task):
                     record = ToolCallRecord(
                         name=call.name,
@@ -554,11 +637,23 @@ class ReActAgent:
                             )
                         if record.ok:
                             done[key] = step
-                if not record.ok and not (record.error or "").startswith("repeated call"):
+                            if call.name == "get_exchange_rate":
+                                converted.add(str(call.arguments.get("currency", "")).upper())
+                unconverted = (record.error or "").startswith("not executed: the task gives amounts")
+                if (
+                    not record.ok
+                    and not (record.error or "").startswith("repeated call")
+                    and not unconverted  # refused for the state of the run, not the arguments
+                ):
                     if key in failed:
                         retried.add(key)  # second failure of a transient error: no more retries
                     failed[key] = (step, record.error or "")
             observation = ToolLoop.observation(record)  # same format as in the phase-2 training
+            executed = call.error is None and not (record.error or "").startswith(
+                ("not executed", "repeated call")
+            )
+            if executed and (codes := unlisted_codes(call.name, call.arguments, task)):
+                observation["content"] += unlisted_note(codes)  # v1: a note, not a refusal
             tool_def = self.registry.tools.get(record.name)
             if tool_def is not None and tool_def.requires_confirmation:
                 actions.append(record)  # issued, refused by the tool, or denied by the policy
@@ -574,7 +669,8 @@ class ReActAgent:
             )
             if repeats >= max_repeats:
                 # Stuck: the answer given before the reminder, if any; the trace shows the loop.
-                return response(pending, step, succeeded=bool(pending))
+                # Without one, the last error explained (v1): still not a success.
+                return response(pending or stuck_answer(), step, succeeded=bool(pending))
             if record.ok and record.name == "final_answer":
                 return response(str(record.result), step)
 
@@ -604,4 +700,4 @@ class ReActAgent:
                 )
             )
             return response(pending, max_steps)
-        return response("", max_steps, succeeded=False)
+        return response(stuck_answer(), max_steps, succeeded=False)

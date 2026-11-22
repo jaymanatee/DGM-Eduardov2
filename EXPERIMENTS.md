@@ -2319,3 +2319,217 @@ Y lo que daría arreglar cada patrón. De los **74 conjuntos que hoy no dan ning
   diverso y para incluir partidas con varias subdivisiones (textil, alimentación, vehículos). No es
   una muestra aleatoria del arancel: los totales describen este catálogo, y lo que generaliza es el
   desglose por capítulo.
+
+### 2026-11-22 · Fase 4 · El banco de 20 tareas, con las respuestas calculadas por el motor
+
+**Qué queríamos saber.** El README de la fase 4 pide una veintena de tareas que encadenen al menos
+dos herramientas, con una comprobación automática de la respuesta. El `example_tasks.jsonl` de la
+plantilla pregunta por el tiempo en Madrid. Necesitábamos un banco que midiera lo que importa en
+ARCA: que el agente reúna bien los datos, que no invente un veredicto cuando no lo hay y que no
+emita una declaración que no debe.
+
+**Qué hicimos.**
+- **Veinte tareas en `agent/bench/tasks.jsonl`, en español y en inglés:**
+
+  | Categoría | n | Qué pone a prueba |
+  |---|---|---|
+  | `cambio` | 3 | USD, CNY y KRW. En dos, el veredicto cambia si no se convierte; una, con acumulación (material coreano con declaración del proveedor) |
+  | `veredicto` | 4 | Un no originario; una trampa de tolerancia (70 % no originario, pero originario por CTH); una regla con tres subdivisiones; reembalar y etiquetar |
+  | `declaracion` | 3 | Emitir una; emitir una de más de 6.000 € con REX; un no originario, para el que no hay que emitir nada |
+  | `conocimiento` | 3 | Base de conocimiento más una herramienta (q25, q27 y q32 del dorado de la fase 3) |
+  | `vies` | 1 | El NIF del proveedor en VIES y la evaluación |
+  | `faltan_datos` | 2 | Más de 6.000 € sin REX; un material pagado en dong, que el BCE no publica |
+  | `imposible` | 2 | Un textil (la herramienta pide revisión manual); el acuerdo UE-Australia, que no cubrimos |
+  | `codigo_no_material` | 1 | El enunciado menciona una clasificación antigua (8418.21) que no es un material |
+  | `larga` | 1 | Ocho materiales, dos monedas y la declaración con REX |
+
+- **Las respuestas esperadas no están escritas a mano.** Las calculamos ejecutando `evaluate_origin`
+  y `get_exchange_rate` sobre las respuestas de la API que ya teníamos guardadas
+  (`tool_use/sft/data/` y el fixture de la batería en `tests/fixtures/tool_use/`), sin red. Cada
+  tarea lleva la llamada de referencia (`reference_call`) y el resultado (`expected`). En
+  `cambio-01` y `larga-01`, no convertir la moneda cambia el veredicto (51,7 % y 50,4 % en vez de
+  48,4 % y 48,1 %).
+- **`agent/evaluate.py`:**
+  - **comprobaciones nuevas:** `all`, `any` y `not`, para exigir "dice X y no dice Y";
+  - **`forbidden_tools`:** suspende la tarea si una herramienta que no debía ejecutarse llegó a
+    hacerlo (la declaración de un no originario, o un veredicto calculado con un valor inventado);
+  - **los números** se leen con coma o con punto decimal: antes, "48,38" se leía 4838;
+  - **una carpeta por tarea para las declaraciones** (`outputs/agent_eval/<cerebro>/<tarea>`).
+    `issue_origin_statement` no sobrescribe nunca, así que con una sola carpeta el segundo cerebro
+    habría suspendido todas las tareas de declaración;
+  - **guarda el resultado después de cada tarea.** `--resume` sigue donde se quedó, `--ids` lanza
+    unas pocas y `--rescore` vuelve a puntuar las respuestas guardadas sin el modelo. Si una tarea
+    lanza una excepción, se apunta y se sigue con la siguiente.
+- **`agent/run_evaluations.sh`** lanza todas las configuraciones, cada una con su log en `runs/`.
+  Con `TAG` se pone una versión en el nombre de los ficheros, para no pisar resultados anteriores.
+- **`agent/analyze.py`** escribe `reports/phase4_analysis.md`. Además del acierto, compara cada
+  llamada a `evaluate_origin` con la de referencia: acuerdo, producto, precios, y el origen, el
+  valor y la declaración de cada material.
+- **`tests/test_agent_bench.py`:** para cada tarea, una respuesta buena que tiene que pasar y el
+  error típico, que tiene que fallar.
+
+**Qué pasó.**
+- **Leyendo el código antes de ejecutar nada, ya vimos que una tarea la bloqueaba nuestro propio
+  agente.** En `codigo-no-material-01`, `bom_problems` trata cualquier código SA del enunciado como
+  un material que falta. Rechaza la llamada correcta y le pide al modelo que añada el 8418.21. En la
+  DGX falló con las cinco configuraciones.
+- **Prueba corta** en la DGX (2 tareas, `base` y `rlm`): 16 s por tarea con `base` y 29 s con
+  `rlm`. Fallaron 3 de 4, las tres por el agente:
+  - `base` no consultó la base de conocimiento y trató un "pequeño paquete" como si fuera un
+    producto;
+  - `rlm` escribió `"exporter_reference": "REX"`. El control de valores inventados lo frenó, pero el
+    modelo no repitió la llamada: respondió en texto con una conversión de 1.000 USD que no aparece
+    en la tarea;
+  - `rlm` sí buscó en la base de conocimiento, pero se inventó el límite (500 € en vez de 1.000
+    USD) y el tipo de cambio.
+- **Una tarea aprobada con los argumentos mal.** `base` pasó `declaracion-01` con el valor del envío
+  (4.200 €) como precio franco fábrica (390 €). Acertó porque esa lavadora cumple el CTH de todas
+  formas. De ahí la comparación con la llamada de referencia en `analyze.py`.
+- **Dos de nuestras comprobaciones estaban mal.** Leímos una a una las 15 respuestas que `base`
+  falló en la primera ejecución:
+  - en `veredicto-01` respondió "not originating" sin el porcentaje, y lo exigíamos;
+  - en `imposible-01` respondió "cannot be determined with the available tools… consult a customs
+    expert". No aceptábamos esa forma de decirlo y, además, leíamos "to determine if the product is
+    originating" como un veredicto.
+
+  Las corregimos: en "no originario" basta el veredicto (el porcentaje se mide aparte, en los
+  argumentos), y en las tareas sin veredicto solo cuenta como tal una afirmación ("are originating
+  under…"). Las respuestas reales de la DGX quedan como tests, cada una con nuestro juicio. Con eso,
+  `base` pasa del 25 % al 35 %.
+
+**Qué concluimos.**
+- **Con el motor calculando la respuesta, el dato esperado no se equivoca.** Lo que se puede
+  equivocar es la comprobación del texto. Por eso cada tarea tiene su par de respuestas, y por eso
+  hay que leer las respuestas reales antes de creerse un porcentaje.
+- **El banco no es una muestra de peticiones reales.** Lo escribimos conociendo los puntos débiles
+  del agente, y casi cada tarea tiene una trampa. Mide la robustez más que el acierto típico.
+- **Aviso sobre la muestra.** De los 17 productos con llamada de referencia, 13 están en el train
+  del SFT de herramientas, 2 en su validación, 1 en su test y 1 fuera (la batería). El cerebro `rlm`
+  los vio al entrenar, con otras listas de materiales y otros precios, y eso puede favorecerle.
+- **Aviso sobre la fecha.** Las reglas se leen de la API con la fecha del día, y algunas son
+  transitorias hasta el 31/12/2026 (baterías, vehículos). `vies-01` depende de VIES en directo.
+
+### 2026-11-22 · Fase 4 · Los cerebros en el banco (v0): lo que hace buen agente es el SFT de herramientas, no razonar
+
+**Qué queríamos saber.** La pregunta del README: ¿ayuda haber entrenado el modelo para razonar
+cuando lo pones a actuar? Y qué adaptador usa el agente por defecto.
+
+**Qué hicimos.** `sh agent/run_evaluations.sh` en la DGX (H200 MIG 3g.71gb): las 20 tareas con
+cinco configuraciones del mismo Qwen3-1.7B, decodificación greedy, `max_steps=10` y memoria de
+6.000 tokens. Después, `uv run python -m agent.analyze`.
+
+| Ejecución | Cerebro | Adaptador | Thinking |
+|---|---|---|---|
+| `eval:base` | base | ninguno | no |
+| `eval:thinking` | thinking | ninguno | sí |
+| `eval:rlm` | rlm | `sft_think` (fase 1 + SFT de herramientas) | sí |
+| `eval_rlm_sft_nothink:rlm` | rlm | `sft_nothink` | no |
+| `eval_rlm_grpo_pps3:rlm` | rlm | `grpo_pps3` (solo la fase 1) | sí |
+
+**La primera ejecución no vale.** Lanzamos el script dos veces sin darnos cuenta, y dos procesos
+escribieron a la vez en los mismos JSON y en los mismos logs. Lo vimos por cuatro cosas:
+- la misma configuración salía con un 50 % en el log y con un 35 % en el JSON;
+- una misma tarea tenía distinto número de pasos en uno y otro;
+- había líneas rotas en el log;
+- `grpo_pps3` tardaba 93 s por tarea.
+
+Apartamos esos resultados (`reports/phase4_mezclado/`) y repetimos con un solo proceso. Los tiempos
+bajaron a la mitad: `base`, de 25 a 15 s por tarea; `thinking`, de 51 a 28 s.
+
+**Qué pasó.**
+
+| | Éxito | Aciertos con los argumentos mal | Aciertos limpios | Argumentos exactos | Pasos | s/tarea |
+|---|---|---|---|---|---|---|
+| `base` | 35 % (7) | 6 | 1 | 3/17 | 3,0 | 15 |
+| `thinking` | 40 % (8) | 4 | 4 | 3/17 | 3,1 | 28 |
+| `rlm` con `sft_think` | 40 % (8) | 1 | 7 | 10/17 | 3,4 | 21 |
+| **`rlm` con `sft_nothink`** | **45 % (9)** | **0** | **9** | **11/17** | 3,8 | 22 |
+| `rlm` con `grpo_pps3` | 10 % (2) | 1 | 1 | 0/17 | 2,0 | 58 |
+
+*Aciertos con los argumentos mal*: la tarea pasa su comprobación, pero la llamada a
+`evaluate_origin` no coincide con la de referencia. *Aciertos limpios*: el resto de los aciertos.
+*Argumentos exactos*: sobre las 17 tareas con llamada de referencia.
+
+| Categoría | `base` | `thinking` | `sft_think` | `sft_nothink` | `grpo_pps3` |
+|---|---|---|---|---|---|
+| cambio (3) | 0 % | 0 % | 0 % | 33 % | 33 % |
+| veredicto (4) | 50 % | 50 % | 75 % | 75 % | 25 % |
+| declaracion (3) | 67 % | 100 % | 67 % | 100 % | 0 % |
+| conocimiento (3) | 0 % | 0 % | 0 % | 0 % | 0 % |
+| faltan_datos (2) | 0 % | 50 % | 100 % | 50 % | 0 % |
+| imposible (2) | 50 % | 50 % | 50 % | 0 % | 0 % |
+| vies (1) | 100 % | 0 % | 0 % | 100 % | 0 % |
+| codigo_no_material (1) | 0 % | 0 % | 0 % | 0 % | 0 % |
+| larga (1) | 100 % | 100 % | 0 % | 0 % | 0 % |
+
+- **`base` acierta casi siempre con la llamada mal.** De sus 7 aciertos, 6 llevan argumentos
+  distintos de los de referencia. Sobre todo el origen de los materiales (11 errores; 16 en
+  `thinking`), como marcar SOCIO un material de la UE con declaración del proveedor. Con los dos
+  adaptadores SFT, 1 y 0 errores de ese tipo.
+- **`grpo_pps3` no actúa como agente.** En 14 de las 17 tareas con referencia no llama a
+  `evaluate_origin`. Responde de cabeza, recibe el recordatorio de `final_answer`, vuelve a responder
+  en texto y se acaba: 2 pasos siempre. Sus 2 aciertos son "no originario" dichos de cabeza
+  (`veredicto-01` sin llamar a nada; `cambio-02` con la llamada mal).
+- **Los adaptadores SFT no llaman nunca a `final_answer`** (16 y 17 de 20 tareas): en el SFT de la
+  fase 2 no existía. El bucle acepta la segunda respuesta en texto, a costa de un paso por tarea.
+- **Lo que falla en todas las configuraciones:**
+  - **conocimiento (0 de 15):** `base` no llama a `search_knowledge_base` en ninguna de las tres.
+    `rlm` la llamó en la prueba corta, pero se inventó el dato;
+  - **cambio:** ninguna configuración acierta `cambio-01`, y todas con la llamada mal (`base` usó
+    los 150 USD como 150 €). En `cambio-02` y `cambio-03`, `base` mete
+    los CNY y los KRW como euros: la herramienta responde que los materiales suman más que el precio
+    y el modelo repite la misma llamada hasta que el bucle corta. Solo `sft_nothink` convierte bien,
+    y solo en `cambio-03`;
+  - **`codigo-no-material-01` (0 de 5):** el fallo de `bom_problems` de la entrada anterior;
+  - **`imposible-02` (0 de 5):** nadie dice que el acuerdo con Australia no está cubierto.
+- **Respuestas vacías:** 6 de 20 en `base`, frente a 1 con los SFT. En las que leímos, el modelo
+  repite una llamada que ha fallado, el control de llamadas repetidas corta, y como no había respondido antes,
+  la respuesta queda vacía.
+- **Ruido.** `sft_think` sacó 50 %, 35 % y 40 % en tres ejecuciones (las dos primeras, las mezcladas
+  y con la primera versión de las comprobaciones). `base` repite 7 de 20, pero no las mismas 7.
+  Greedy no basta para que se repita: cambian redondeos de la GPU y respuestas de las APIs en
+  directo, como ya vimos en la fase 1 (26 % de veredictos distintos) y en la v4 de la fase 2.
+
+**Qué concluimos.**
+- **Respuesta a la pregunta del README: entrenar el modelo para razonar de cabeza lo hace peor
+  agente.** `grpo_pps3` saca un 10 %, por debajo del 35 % del modelo sin tocar, igual que en la
+  fase 2 (26 % de selección frente a 89,5 %). Lo que hace buen agente es el SFT de herramientas
+  encima: del 10 % al 45 %.
+- **El porcentaje de éxito esconde la diferencia.** Con el éxito, `base` y los SFT parecen casi
+  empatados (35 % frente a 40-45 %). Descontando lo que se acierta por suerte, son 1 acierto limpio
+  frente a 7 y 9. La mejora más clara es rellenar bien la llamada: de 3 a 10-11 de 17, coherente con
+  la fase 2 (evaluaciones correctas del 31 % al 91 %).
+- **Razonar antes de cada paso no aporta.** `thinking` gana una tarea a `base` y tarda el doble.
+  `sft_think` y `sft_nothink` se separan por una sola tarea, dentro del ruido, y tardan lo mismo.
+- **Adaptador por defecto, provisional: `sft_nothink`,** el mismo que sirve `/tools`. Lo
+  confirmamos con la v1 y con repeticiones; mientras tanto no cambiamos `.env.example`.
+- **Con 20 tareas y este ruido, 1 o 2 tareas de diferencia no significan nada.** Para el informe hay
+  que repetir cada configuración tres veces y dar la media y el rango.
+- **Lo que falla en todos los cerebros es, en buena parte, nuestro:** el fallo de `bom_problems`,
+  las respuestas vacías al atascarse y la moneda sin convertir. Va a la v1 (entrada siguiente).
+
+### 2026-11-22 · Fase 4 · v1 del bucle: cinco arreglos a partir de las trazas de la v0
+
+**Qué queríamos saber.** Cuánto de lo que falla en la v0 es del modelo y cuánto de nuestro código.
+
+**Qué hicimos.** Cada cambio sale de una traza concreta de la v0:
+
+| Cambio | Traza de la v0 que lo motiva |
+|---|---|
+| Si el bucle se atasca sin respuesta, `final_answer` explica el último error en vez de quedar vacía. Sigue contando como fallo | Las 6 respuestas vacías de `base` |
+| Un código SA del enunciado que no está en la llamada deja de bloquear y pasa a ser una **nota** en la observación (`unlisted_codes`) | `codigo-no-material-01` (8418.21, una clasificación antigua), y `faltan-datos-01/02`, donde el "material que falta" era el producto de verdad y el modelo se había equivocado de código |
+| El mensaje de "el producto como material" deja de decir solo que se quite: si el usuario compra el producto terminado y lo reembala, se queda, y lo que hay que corregir es el precio franco fábrica | `veredicto-04`: obedecer el mensaje habría dejado solo el cartón de la UE, y un "originario" falso. No pasó porque el modelo tampoco obedeció |
+| `evaluate_origin` no se ejecuta mientras el enunciado tenga un importe en otra moneda que no haya pasado por `get_exchange_rate` (`foreign_amounts`) | `cambio-01`: 150 USD usados como 150 €, y el veredicto cambia |
+| Fuera el ejemplo `'850760'` de las descripciones de `tool_use/tools.py`, y el error de "los materiales suman más que el precio" añade la pista de la conversión | `faltan-datos-01`: el modelo copió 850760 como código de unos contadores eléctricos (y en `conocimiento-01`). `cambio-02/03`: CNY y KRW metidos como euros |
+
+Comprobado sobre las 20 tareas: el control de moneda solo salta en las cinco que tienen importes en
+otra moneda (las tres de `cambio`, `larga-01` y los dong de `faltan-datos-02`), y la nota de códigos
+solo en `codigo-no-material-01`. Tests nuevos en
+`tests/test_agent.py`. Ejecución: `TAG=v1 sh agent/run_evaluations.sh`. Resultado en la entrada
+siguiente.
+
+**Qué concluimos.** Dos avisos antes de medir:
+- **Los cambios de `tool_use/tools.py` llegan también a `/tools` (fase 2),** que se midió con las
+  descripciones anteriores.
+- **La v1 está hecha mirando este mismo banco,** como las versiones de la fase 2. Lo que mejore no
+  se puede leer como generalización sin un banco aparte.
