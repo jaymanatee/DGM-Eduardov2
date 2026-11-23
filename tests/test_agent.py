@@ -419,3 +419,49 @@ def test_unconverted_evaluation_repeated_gets_stuck():
     r = scripted_v1(again, again, again, again).run(task, brain="base")
     assert not r.succeeded and r.n_steps == 3
     assert "USD" in r.final_answer and r.final_answer.startswith("No he podido")
+
+
+def test_consignment_must_be_a_value_of_the_task():
+    from agent.react_agent import consignment_not_given
+
+    task = "Emite la declaración para la factura VT-2026-0001, valor del envío 4.200 €."
+    args = {**STATEMENT, "consignment_value_eur": 4200}
+    assert not consignment_not_given("issue_origin_statement", args, task)
+    assert consignment_not_given(
+        "issue_origin_statement", {**args, "consignment_value_eur": 22.09}, task
+    )
+    assert not consignment_not_given("evaluate_origin", args, task)
+    english = "Statement for invoice JP-4471, consignment value 18,500 EUR."
+    assert not consignment_not_given(
+        "issue_origin_statement", {**args, "consignment_value_eur": 18500}, english
+    )
+
+
+# ------------------------------------------------------------------------- v2 of the loop
+
+
+def test_a_tool_named_in_prose_with_its_arguments_is_a_call():
+    prose = 'Action: call `get_origin_rule` with {"hs_code": "841459"}'
+    r = scripted(prose, call("final_answer", answer="CTSH")).run(TASK, brain="base")
+    assert r.steps[0].action.name == "get_origin_rule"
+    assert r.steps[0].action.arguments == {"hs_code": "841459"}
+    assert r.final_answer == "CTSH"
+
+
+def test_a_named_call_with_broken_json_is_not_the_final_answer():
+    """The v1 trace of sft_nothink in cambio-01: an expression inside the JSON."""
+    prose = 'Action: call `get_origin_rule` with {"hs_code": 841459 / 2}'
+    r = scripted(prose, call("final_answer", answer="Sin datos.")).run(TASK, brain="base")
+    assert r.steps[0].action.name == "get_origin_rule"
+    assert "not valid JSON" in r.steps[0].observation
+    assert "near:" in r.steps[0].observation
+    assert r.final_answer == "Sin datos."  # the prose was not taken for the answer
+
+
+def test_the_same_broken_json_three_times_is_stuck():
+    trailing_comma = '{"name": "get_origin_rule", "arguments": {"hs_code": "841459",}}'
+    broken = f"<tool_call>\n{trailing_comma}\n</tool_call>"
+    r = scripted(broken, broken, broken, broken, broken).run(TASK, brain="base")
+    assert r.n_steps == 3 and not r.succeeded  # not 10 steps
+    assert "near:" in r.steps[0].observation
+    assert "same broken call as in step 1" in r.steps[1].observation

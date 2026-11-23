@@ -24,7 +24,12 @@
 #
 # TAG names a version of the agent, so a new one never overwrites the old results:
 #   TAG=v1 sh agent/run_evaluations.sh   ->  reports/phase4_eval_v1.json, runs/phase4_main_v1.log...
+#
+# BENCH runs another task file (always with its own TAG), ARCA_AGENT_ROUTER=1 the knowledge
+# router (agent/router.py):
+#   BENCH=agent/bench/tasks_knowledge.jsonl TAG=v2k ARCA_AGENT_ROUTER=1 sh agent/run_evaluations.sh main
 set -u
+BENCH=${BENCH:-agent/bench/tasks.jsonl}
 TAG=${TAG:+_$TAG}
 export PYTHONUNBUFFERED=1
 mkdir -p runs reports
@@ -37,11 +42,11 @@ run() {
         echo "== $name: SKIPPED, no $adapter/adapter_model.safetensors"
         return
     fi
-    echo "== $name: adapter=$adapter thinking=$thinking budget=$budget brains=$* -> $out"
+    echo "== $name: adapter=$adapter thinking=$thinking budget=$budget router=${ARCA_AGENT_ROUTER:-0} bench=$BENCH brains=$* -> $out"
     ARCA_AGENT_ADAPTER="$adapter" ARCA_AGENT_RLM_THINKING="$thinking" \
         ARCA_AGENT_TOKEN_BUDGET="$budget" \
         uv run --extra train --extra rag --extra agent python -m "$module" --resume \
-        --brains "$@" --out "$out" > "runs/phase4_$name$TAG.log" 2>&1
+        --bench "$BENCH" --brains "$@" --out "$out" > "runs/phase4_$name$TAG.log" 2>&1
 }
 
 THINK=tool_use/weights/sft_think

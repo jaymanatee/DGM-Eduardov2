@@ -29,9 +29,10 @@ from datetime import date
 
 from agent.memory import ConversationMemory
 from agent.prompts import AGENT_DOMAIN_CONTEXT, NO_CALL_NUDGE, REACT_SYSTEM_PROMPT
+from agent.router import ROUTED_NOTE
 from api.schemas import AgentAction, AgentResponse, AgentStep, ToolCallRecord
 from tool_use.executor import CONFIRMATION_POLICIES, ToolLoop
-from tool_use.parser import ParsedOutput, parse_tool_calls
+from tool_use.parser import ParsedOutput, ToolCall, parse_tool_calls
 from tool_use.registry import ToolRegistry, tool
 from tool_use.tools import ECB_CURRENCIES, default_registry
 
@@ -109,7 +110,56 @@ def recover_untagged_call(
             )
             fixed = think + (prose + "\n" if prose else "") + f"<tool_call>\n{call}\n</tool_call>"
             return fixed, parse_tool_calls(fixed)
+    return recover_named_call(raw, parsed, registry)
+
+
+# "Action: call `evaluate_origin` with {...}": the tool named in prose, its arguments after it.
+_NAMED_CALL = re.compile(r"`?(?P<name>[a-z][a-z_]+)`?\s*(?:with|con)\s*(?=\{)")
+
+
+def recover_named_call(
+    raw: str, parsed: ParsedOutput, registry: ToolRegistry
+) -> tuple[str, ParsedOutput]:
+    """v2: a registered tool named in prose and followed by its arguments becomes a call.
+
+    In the v1 run, sft_nothink wrote 'Action: call `evaluate_origin` with {...}', with
+    "150 / 0.9153" inside the JSON, and that text became its final answer. With valid JSON it is
+    a call; with broken JSON it is a malformed call, so the model hears what to fix instead of
+    the loop taking the text for the answer."""
+    for match in _NAMED_CALL.finditer(parsed.text):
+        name = match.group("name")
+        if name not in registry.tools:
+            continue
+        start = match.end()
+        try:
+            arguments, _ = json.JSONDecoder().raw_decode(parsed.text, start)
+        except json.JSONDecodeError as error:
+            near = parsed.text[max(start, error.pos - 30) : error.pos + 30].replace("\n", " ")
+            bad = ToolCall(
+                name=name,
+                error=f"the arguments of {name} are not valid JSON ({error.msg}, near: {near!r})."
+                " Write each value as a plain number or string, not an expression: convert "
+                "amounts with get_exchange_rate and copy its amount_eur.",
+            )
+            return raw, ParsedOutput(parsed.thinking, parsed.text, [bad])
+        if isinstance(arguments, dict):
+            prose = parsed.text[: match.start()].strip()
+            think = f"<think>\n{parsed.thinking}\n</think>\n\n" if parsed.thinking else ""
+            call = json.dumps({"name": name, "arguments": arguments}, ensure_ascii=False)
+            fixed = think + (prose + "\n" if prose else "") + f"<tool_call>\n{call}\n</tool_call>"
+            return fixed, parse_tool_calls(fixed)
     return raw, parsed
+
+
+def where_json_breaks(raw: str) -> str:
+    """' (near: '...')' for the first <tool_call> block whose JSON does not parse, or ''."""
+    for block in re.findall(r"<tool_call>(.*?)(?:</tool_call>|$)", raw, flags=re.DOTALL):
+        try:
+            json.loads(block)
+        except json.JSONDecodeError as error:
+            near = block[max(0, error.pos - 30) : error.pos + 30].replace("\n", " ")
+            return f" (near: {near!r})"
+    return ""
 
 # Arguments of an action that the user has to give: a value for them that does not appear
 # in the task was made up by the model (it invented REX numbers in three runs in a row).
@@ -129,6 +179,34 @@ def invented_arguments(name: str, arguments: dict, task: str) -> list[str]:
         and arguments[argument].strip()
         and _plain(arguments[argument]) not in _plain(task)
     ]
+
+def _amounts(text: str) -> set[float]:
+    """Every number of the text, read with a decimal point and with a decimal comma
+    ('4.200' is 4.2 and 4200; '18,500' is 18.5 and 18500)."""
+    values = set()
+    for token in re.findall(r"\d[\d.,]*\d|\d", text):
+        for thousands, decimal in ((",", "."), (".", ",")):
+            try:
+                values.add(float(token.replace(thousands, "").replace(decimal, ".")))
+            except ValueError:
+                pass
+    return values
+
+
+def consignment_not_given(name: str, arguments: dict, task: str) -> bool:
+    """An issue_origin_statement whose consignment value is not a number of the task.
+
+    The phase-2 SFT data samples the consignment value without looking at the price: in 18 of
+    its 135 training statements it is below the ex-works price of one product. In the synthetic
+    test (2026-11-23) sft_nothink passed a unit price as the consignment, so a consignment that
+    needed the exporter reference (above 6,000 EUR) went out without it."""
+    if name != "issue_origin_statement":
+        return False
+    value = arguments.get("consignment_value_eur")
+    if not isinstance(value, (int, float)):
+        return False
+    return not any(abs(value - v) < 0.005 for v in _amounts(task))
+
 
 # HS codes the user wrote (6 digits, "8414.59", "8414 59" or "841459"), not prices: a number
 # followed by € or EUR is an amount, even if it looks like a code ("1200.50 €").
@@ -276,6 +354,7 @@ class ReActAgent:
     tokens_used: int = 0  # prompt + generated tokens of the current run, for the evaluation
     tool_timeout: float = 45.0  # seconds a tool may take before the agent stops waiting for it
     confirm: str = "auto"  # policy for tools with requires_confirmation: auto or deny
+    router: object = None  # agent.router.KnowledgeRouter, or None: the model alone decides
 
     @classmethod
     def from_env(cls) -> ReActAgent:
@@ -295,6 +374,10 @@ class ReActAgent:
             confirm=os.environ.get("ARCA_AGENT_CONFIRM", "auto"),
             token_budget=int(os.environ.get("ARCA_AGENT_TOKEN_BUDGET") or 6000),
         )
+        if os.environ.get("ARCA_AGENT_ROUTER", "0") == "1":
+            from agent.router import KnowledgeRouter
+
+            agent.router = KnowledgeRouter.from_examples()
         if agent.confirm not in CONFIRMATION_POLICIES:
             raise ValueError(f"ARCA_AGENT_CONFIRM must be one of {sorted(CONFIRMATION_POLICIES)}")
         if agent.adapter_path in ("", "none"):
@@ -481,6 +564,7 @@ class ReActAgent:
         retried: set[str] = set()  # transient failures already retried once
         repeats = 0
         max_repeats = 2  # a third identical call means the loop is stuck
+        broken: dict[str, int] = {}  # malformed calls: error -> first step it was seen
         to_convert = foreign_amounts(task)  # currencies with an amount in the task
         converted: set[str] = set()  # currencies get_exchange_rate has converted in this run
         refused_unconverted: set[str] = set()  # evaluate_origin calls refused for that
@@ -508,7 +592,36 @@ class ReActAgent:
                 tokens_used=self.tokens_used,
             )
 
-        for step in range(1, max_steps + 1):
+        # The knowledge router (agent/router.py): searches made by the loop before the model's
+        # first step, in the trace like any other call and counted in max_steps.
+        routed = self.router.queries(task) if self.router is not None else []
+        for query, probability in routed[: max(0, max_steps - 1)]:
+            arguments = {"query": query, "top_k": 3}
+            record = self.call_tool("search_knowledge_base", arguments)
+            observation = ToolLoop.observation(record)
+            if record.ok:
+                observation["content"] += ROUTED_NOTE.format(query=query)
+            steps.append(
+                AgentStep(
+                    thought=f"[knowledge router, p={probability:.2f}] The task asks how the "
+                    "rules work: the loop searches the knowledge base before the first step.",
+                    action=AgentAction(name="search_knowledge_base", arguments=arguments),
+                    observation=observation["content"],
+                )
+            )
+            call_text = json.dumps(
+                {"name": "search_knowledge_base", "arguments": arguments}, ensure_ascii=False
+            )
+            memory.add("assistant", f"<tool_call>\n{call_text}\n</tool_call>")
+            memory.add(**observation)
+            key = json.dumps(
+                {"name": "search_knowledge_base", "arguments": arguments},
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+            done[key] = len(steps)
+
+        for step in range(len(steps) + 1, max_steps + 1):
             raw = self.generate(memory.render(), brain)
             parsed = parse_tool_calls(raw)
             recovered = False
@@ -537,9 +650,22 @@ class ReActAgent:
 
             call = parsed.tool_calls[0]
             if call.error is not None:  # malformed <tool_call>: the model hears what was wrong
+                error = call.error
+                if error.startswith("tool_call is not valid JSON"):
+                    error += where_json_breaks(raw)  # v2: where, not only what
+                # v2: the same broken call again is a repetition too. In the v1 run, the base
+                # brain wrote one broken JSON 9 times and spent all 10 steps.
+                if error in broken:
+                    repeats += 1
+                    error += (
+                        f" This is the same broken call as in step {broken[error]}: write it "
+                        "again as valid JSON, or call final_answer."
+                    )
+                else:
+                    broken[error] = step
                 record = ToolCallRecord(
                     name=call.name or "<invalid>", arguments=call.arguments, ok=False,
-                    error=call.error,
+                    error=error,
                 )
             else:
                 key = json.dumps(
@@ -585,6 +711,17 @@ class ReActAgent:
                         f"values must be copied from the task, never made up). Nothing was done. "
                         f"{fix}",
                     )
+                elif consignment_not_given(call.name, call.arguments, task):
+                    record = ToolCallRecord(
+                        name=call.name,
+                        arguments=call.arguments,
+                        ok=False,
+                        error="not executed: consignment_value_eur "
+                        f"{call.arguments.get('consignment_value_eur')} is not a value the user "
+                        "gave. Copy the value of the consignment (the invoice) from the task; if "
+                        "the user did not give it, call final_answer asking for it. Nothing was "
+                        "issued.",
+                    )
                 elif call.name == "evaluate_origin" and (missing := to_convert - converted):
                     # v1: amounts in another currency must be converted first.
                     if key in refused_unconverted:
@@ -594,9 +731,10 @@ class ReActAgent:
                         name=call.name,
                         arguments=call.arguments,
                         ok=False,
-                        error=f"not executed: the task gives amounts in {', '.join(sorted(missing))}"
-                        ". Convert each one first with get_exchange_rate (currency, the month the "
-                        "user names, amount) and use its amount_eur as value_eur. If "
+                        error="not executed: the task gives amounts in "
+                        f"{', '.join(sorted(missing))}. Convert each one first with "
+                        "get_exchange_rate (currency, the month the user names, amount) and "
+                        "use its amount_eur as value_eur. If "
                         "get_exchange_rate cannot convert a currency, call final_answer asking "
                         "the user for that value in euros.",
                     )
@@ -639,7 +777,9 @@ class ReActAgent:
                             done[key] = step
                             if call.name == "get_exchange_rate":
                                 converted.add(str(call.arguments.get("currency", "")).upper())
-                unconverted = (record.error or "").startswith("not executed: the task gives amounts")
+                unconverted = (record.error or "").startswith(
+                    "not executed: the task gives amounts"
+                )
                 if (
                     not record.ok
                     and not (record.error or "").startswith("repeated call")
