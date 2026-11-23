@@ -146,8 +146,8 @@ def test_pipeline_reads_the_filter_from_the_environment(monkeypatch):
     from rag.generate import RagPipeline
 
     monkeypatch.delenv("ARCA_RAG_AGREEMENT_FILTER", raising=False)
-    assert not RagPipeline.from_env().agreement_filter
-    monkeypatch.setenv("ARCA_RAG_AGREEMENT_FILTER", "1")
     pipeline = RagPipeline.from_env()
-    assert pipeline.agreement_filter
+    assert pipeline.agreement_filter  # on by default
     assert "agreement filter" in pipeline.name
+    monkeypatch.setenv("ARCA_RAG_AGREEMENT_FILTER", "0")
+    assert not RagPipeline.from_env().agreement_filter

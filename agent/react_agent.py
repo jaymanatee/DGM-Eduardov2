@@ -374,7 +374,8 @@ class ReActAgent:
             confirm=os.environ.get("ARCA_AGENT_CONFIRM", "auto"),
             token_budget=int(os.environ.get("ARCA_AGENT_TOKEN_BUDGET") or 6000),
         )
-        if os.environ.get("ARCA_AGENT_ROUTER", "0") == "1":
+        # On by default since v3 (EXPERIMENTS.md, 2026-11-23); ARCA_AGENT_ROUTER=0 turns it off.
+        if os.environ.get("ARCA_AGENT_ROUTER", "1") == "1":
             from agent.router import KnowledgeRouter
 
             agent.router = KnowledgeRouter.from_examples()

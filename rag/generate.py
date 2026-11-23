@@ -35,8 +35,8 @@ The generator is configured from environment variables, as in phase 2:
 * ``ARCA_RAG_RERANK``    empty (default) serves the retrievers as they are; ``generic`` or
   ``agreement`` puts Qwen3-Reranker on top of each of them, with that instruction
   (``rag/rerank.py``): the first ``POOL`` hits reordered by the reranker's P(yes)
-* ``ARCA_RAG_AGREEMENT_FILTER`` ``1`` keeps only passages of the agreements the question
-  names, plus general documents (``rag/agreements.py``); ``0`` (default) does not filter.
+* ``ARCA_RAG_AGREEMENT_FILTER`` ``1`` (default) keeps only passages of the agreements the
+  question names, plus general documents (``rag/agreements.py``); ``0`` does not filter.
   Applied under the reranker, so the reranker sees the filtered pool
 
 Try it from the command line::
@@ -237,7 +237,7 @@ class RagPipeline:
         weight_bm25: float = HYBRID_LAMBDA,
         index_dir: str | Path = "rag/index",
         rerank: str | None = None,
-        agreement_filter: bool = False,
+        agreement_filter: bool = True,
     ):
         self.model_id, self.adapter_path, self.thinking = model_id, adapter_path, thinking
         self.max_new_tokens = max_new_tokens or (2048 if thinking else 512)
@@ -255,7 +255,7 @@ class RagPipeline:
             thinking=os.environ.get("ARCA_RAG_THINKING", "0") == "1",
             max_new_tokens=int(os.environ.get("ARCA_RAG_MAX_NEW_TOKENS") or 0) or None,
             rerank=os.environ.get("ARCA_RAG_RERANK") or None,
-            agreement_filter=os.environ.get("ARCA_RAG_AGREEMENT_FILTER", "0") == "1",
+            agreement_filter=os.environ.get("ARCA_RAG_AGREEMENT_FILTER", "1") == "1",
         )
 
     @property

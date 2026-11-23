@@ -338,3 +338,52 @@ def test_repetitions_group_the_tagged_runs():
     }
     text = repetitions(runs, "v1")
     assert "| `eval:base` | 2 | 55 % (50 %-60 %) |" in text
+
+
+# ----------------------------------------------- held-out knowledge tasks (agent/router.py)
+
+KNOWLEDGE = {
+    t["id"]: t
+    for t in map(
+        json.loads,
+        (BENCH.parent / "tasks_knowledge.jsonl").read_text(encoding="utf-8").splitlines(),
+    )
+}
+KNOWLEDGE_ANSWERS = {
+    "kn-01": ("A statement on origin is valid for 12 months from the date it was made out.",
+              "It is valid for 2 years."),
+    "kn-02": ("Sirve durante doce meses desde que se extiende [1].",
+              "No hay plazo de validez."),
+    "kn-03": ("You must keep a copy for five years.", "You must keep it for 3 years."),
+    "kn-04": ("No caduca: el número REX es indefinido mientras no se revoque.",
+              "Sí, caduca a los cinco años y hay que renovarlo."),
+    "kn-05": ("Yes, the ovens are originating (MaxNOM, 36.46 %). Small packages up to "
+              "JPY 100,000 are admitted as originating without a proof of origin.",
+              "The ovens are not originating. Small packages up to 500 EUR."),
+    "kn-06": ("Sí, son originarias según el TCA (MAXNOM, 42,2 %). La declaración del proveedor "
+              "de larga duración puede cubrir como máximo dos años.",
+              "No son originarias. La declaración vale un año."),
+}  # fmt: skip
+
+
+def test_knowledge_tasks_are_held_out_from_the_router():
+    from agent.router import HELD_OUT
+
+    assert len(KNOWLEDGE) == 6
+    assert {t["gold"] for t in KNOWLEDGE.values()} <= HELD_OUT
+
+
+@pytest.mark.parametrize("task_id", list(KNOWLEDGE_ANSWERS))
+def test_knowledge_checks_tell_right_from_wrong(task_id):
+    right, wrong = KNOWLEDGE_ANSWERS[task_id]
+    assert check_answer(KNOWLEDGE[task_id], right)
+    assert not check_answer(KNOWLEDGE[task_id], wrong)
+
+
+@pytest.mark.parametrize(
+    "task", [t for t in KNOWLEDGE.values() if "reference_call" in t], ids=lambda t: t["id"]
+)
+def test_knowledge_reference_calls_use_the_codes_of_the_task(task):
+    text = re.sub(r"(\d{4})[.\s](\d{2})", r"\1\2", task["task"])
+    for material in task["reference_call"]["arguments"]["materials"]:
+        assert material["hs_code"] in text
