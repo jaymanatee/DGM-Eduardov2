@@ -1,0 +1,903 @@
+{
+  "settings": {
+    "strategy": "structural",
+    "lambda": 0.3,
+    "pool": 20,
+    "instruction": "Given a user question, retrieve the passages from the knowledge base that answer it."
+  },
+  "summary": {
+    "n_questions": 58,
+    "n_filtered": 51,
+    "evidence_removed": {},
+    "improved": [
+      "q02",
+      "q03",
+      "q04",
+      "q05",
+      "q07",
+      "q45"
+    ],
+    "worse": []
+  },
+  "results": {
+    "off": {
+      "bm25": {
+        "recall@1": 0.3707,
+        "recall@3": 0.4914,
+        "recall@5": 0.5603,
+        "recall@10": 0.681,
+        "mrr": 0.4719
+      },
+      "dense": {
+        "recall@1": 0.5,
+        "recall@3": 0.7586,
+        "recall@5": 0.8793,
+        "recall@10": 0.9138,
+        "mrr": 0.6682
+      },
+      "hybrid": {
+        "recall@1": 0.6034,
+        "recall@3": 0.7414,
+        "recall@5": 0.8362,
+        "recall@10": 0.8966,
+        "mrr": 0.7128
+      },
+      "best_lambda_with_this_setting": 0.3,
+      "hybrid_sweep": {
+        "0.0": {
+          "recall@1": 0.5,
+          "recall@3": 0.7586,
+          "recall@5": 0.8793,
+          "recall@10": 0.9138,
+          "mrr": 0.6663
+        },
+        "0.1": {
+          "recall@1": 0.5517,
+          "recall@3": 0.7759,
+          "recall@5": 0.8621,
+          "recall@10": 0.9138,
+          "mrr": 0.6961
+        },
+        "0.2": {
+          "recall@1": 0.5862,
+          "recall@3": 0.7759,
+          "recall@5": 0.8448,
+          "recall@10": 0.9138,
+          "mrr": 0.7122
+        },
+        "0.3": {
+          "recall@1": 0.6034,
+          "recall@3": 0.7414,
+          "recall@5": 0.8362,
+          "recall@10": 0.8966,
+          "mrr": 0.7128
+        },
+        "0.4": {
+          "recall@1": 0.6034,
+          "recall@3": 0.7241,
+          "recall@5": 0.8621,
+          "recall@10": 0.8793,
+          "mrr": 0.7101
+        },
+        "0.5": {
+          "recall@1": 0.5517,
+          "recall@3": 0.7241,
+          "recall@5": 0.8276,
+          "recall@10": 0.8793,
+          "mrr": 0.6744
+        },
+        "0.6": {
+          "recall@1": 0.4569,
+          "recall@3": 0.6724,
+          "recall@5": 0.7759,
+          "recall@10": 0.8793,
+          "mrr": 0.6032
+        },
+        "0.7": {
+          "recall@1": 0.4224,
+          "recall@3": 0.6207,
+          "recall@5": 0.7069,
+          "recall@10": 0.8362,
+          "mrr": 0.5587
+        },
+        "0.8": {
+          "recall@1": 0.4052,
+          "recall@3": 0.5603,
+          "recall@5": 0.6034,
+          "recall@10": 0.7845,
+          "mrr": 0.5189
+        },
+        "0.9": {
+          "recall@1": 0.3879,
+          "recall@3": 0.5259,
+          "recall@5": 0.5776,
+          "recall@10": 0.6983,
+          "mrr": 0.4859
+        },
+        "1.0": {
+          "recall@1": 0.3707,
+          "recall@3": 0.4914,
+          "recall@5": 0.5603,
+          "recall@10": 0.681,
+          "mrr": 0.4667
+        }
+      },
+      "by_kind": {
+        "bm25": {
+          "cross": {
+            "n": 18,
+            "recall@1": 0.2222,
+            "recall@3": 0.5,
+            "recall@5": 0.5556,
+            "recall@10": 0.6667,
+            "mrr": 0.3841
+          },
+          "es": {
+            "n": 8,
+            "recall@1": 0.5,
+            "recall@3": 0.5,
+            "recall@5": 0.5,
+            "recall@10": 0.625,
+            "mrr": 0.5239
+          },
+          "fact": {
+            "n": 29,
+            "recall@1": 0.4483,
+            "recall@3": 0.5172,
+            "recall@5": 0.6207,
+            "recall@10": 0.7241,
+            "mrr": 0.5175
+          },
+          "multi": {
+            "n": 3,
+            "recall@1": 0.1667,
+            "recall@3": 0.1667,
+            "recall@5": 0.1667,
+            "recall@10": 0.5,
+            "mrr": 0.418
+          }
+        },
+        "dense": {
+          "cross": {
+            "n": 18,
+            "recall@1": 0.6111,
+            "recall@3": 0.8333,
+            "recall@5": 0.9444,
+            "recall@10": 1.0,
+            "mrr": 0.7315
+          },
+          "es": {
+            "n": 8,
+            "recall@1": 0.625,
+            "recall@3": 0.75,
+            "recall@5": 0.875,
+            "recall@10": 0.875,
+            "mrr": 0.7261
+          },
+          "fact": {
+            "n": 29,
+            "recall@1": 0.4138,
+            "recall@3": 0.7586,
+            "recall@5": 0.8621,
+            "recall@10": 0.8966,
+            "mrr": 0.6044
+          },
+          "multi": {
+            "n": 3,
+            "recall@1": 0.3333,
+            "recall@3": 0.3333,
+            "recall@5": 0.6667,
+            "recall@10": 0.6667,
+            "mrr": 0.75
+          }
+        },
+        "hybrid": {
+          "cross": {
+            "n": 18,
+            "recall@1": 0.7222,
+            "recall@3": 0.7778,
+            "recall@5": 0.8889,
+            "recall@10": 1.0,
+            "mrr": 0.795
+          },
+          "es": {
+            "n": 8,
+            "recall@1": 0.625,
+            "recall@3": 0.75,
+            "recall@5": 0.875,
+            "recall@10": 0.875,
+            "mrr": 0.6979
+          },
+          "fact": {
+            "n": 29,
+            "recall@1": 0.5517,
+            "recall@3": 0.7586,
+            "recall@5": 0.8276,
+            "recall@10": 0.8621,
+            "mrr": 0.6649
+          },
+          "multi": {
+            "n": 3,
+            "recall@1": 0.3333,
+            "recall@3": 0.3333,
+            "recall@5": 0.5,
+            "recall@10": 0.6667,
+            "mrr": 0.7222
+          }
+        }
+      },
+      "foreign_in_top5": 38
+    },
+    "on": {
+      "bm25": {
+        "recall@1": 0.4138,
+        "recall@3": 0.5345,
+        "recall@5": 0.6207,
+        "recall@10": 0.6897,
+        "mrr": 0.5216
+      },
+      "dense": {
+        "recall@1": 0.5,
+        "recall@3": 0.7672,
+        "recall@5": 0.8966,
+        "recall@10": 0.9138,
+        "mrr": 0.6775
+      },
+      "hybrid": {
+        "recall@1": 0.6034,
+        "recall@3": 0.8017,
+        "recall@5": 0.9052,
+        "recall@10": 0.9138,
+        "mrr": 0.7264
+      },
+      "best_lambda_with_this_setting": 0.4,
+      "hybrid_sweep": {
+        "0.0": {
+          "recall@1": 0.5,
+          "recall@3": 0.7672,
+          "recall@5": 0.8966,
+          "recall@10": 0.9138,
+          "mrr": 0.6756
+        },
+        "0.1": {
+          "recall@1": 0.569,
+          "recall@3": 0.7845,
+          "recall@5": 0.9138,
+          "recall@10": 0.9138,
+          "mrr": 0.7149
+        },
+        "0.2": {
+          "recall@1": 0.5862,
+          "recall@3": 0.819,
+          "recall@5": 0.9138,
+          "recall@10": 0.9138,
+          "mrr": 0.7207
+        },
+        "0.3": {
+          "recall@1": 0.6034,
+          "recall@3": 0.8017,
+          "recall@5": 0.9052,
+          "recall@10": 0.9138,
+          "mrr": 0.7264
+        },
+        "0.4": {
+          "recall@1": 0.6207,
+          "recall@3": 0.819,
+          "recall@5": 0.8879,
+          "recall@10": 0.9138,
+          "mrr": 0.7389
+        },
+        "0.5": {
+          "recall@1": 0.5345,
+          "recall@3": 0.7672,
+          "recall@5": 0.8534,
+          "recall@10": 0.9138,
+          "mrr": 0.6826
+        },
+        "0.6": {
+          "recall@1": 0.5345,
+          "recall@3": 0.7069,
+          "recall@5": 0.7931,
+          "recall@10": 0.8966,
+          "mrr": 0.6625
+        },
+        "0.7": {
+          "recall@1": 0.5,
+          "recall@3": 0.6552,
+          "recall@5": 0.7414,
+          "recall@10": 0.8534,
+          "mrr": 0.6227
+        },
+        "0.8": {
+          "recall@1": 0.4655,
+          "recall@3": 0.6207,
+          "recall@5": 0.6552,
+          "recall@10": 0.8103,
+          "mrr": 0.5802
+        },
+        "0.9": {
+          "recall@1": 0.431,
+          "recall@3": 0.6034,
+          "recall@5": 0.6207,
+          "recall@10": 0.7069,
+          "mrr": 0.5385
+        },
+        "1.0": {
+          "recall@1": 0.4138,
+          "recall@3": 0.5345,
+          "recall@5": 0.6207,
+          "recall@10": 0.6897,
+          "mrr": 0.5145
+        }
+      },
+      "by_kind": {
+        "bm25": {
+          "cross": {
+            "n": 18,
+            "recall@1": 0.3333,
+            "recall@3": 0.6111,
+            "recall@5": 0.6111,
+            "recall@10": 0.6667,
+            "mrr": 0.4817
+          },
+          "es": {
+            "n": 8,
+            "recall@1": 0.5,
+            "recall@3": 0.5,
+            "recall@5": 0.5,
+            "recall@10": 0.625,
+            "mrr": 0.5239
+          },
+          "fact": {
+            "n": 29,
+            "recall@1": 0.4483,
+            "recall@3": 0.5172,
+            "recall@5": 0.6897,
+            "recall@10": 0.7241,
+            "mrr": 0.5268
+          },
+          "multi": {
+            "n": 3,
+            "recall@1": 0.3333,
+            "recall@3": 0.3333,
+            "recall@5": 0.3333,
+            "recall@10": 0.6667,
+            "mrr": 0.7037
+          }
+        },
+        "dense": {
+          "cross": {
+            "n": 18,
+            "recall@1": 0.6111,
+            "recall@3": 0.8333,
+            "recall@5": 0.9444,
+            "recall@10": 1.0,
+            "mrr": 0.7537
+          },
+          "es": {
+            "n": 8,
+            "recall@1": 0.625,
+            "recall@3": 0.75,
+            "recall@5": 0.875,
+            "recall@10": 0.875,
+            "mrr": 0.7261
+          },
+          "fact": {
+            "n": 29,
+            "recall@1": 0.4138,
+            "recall@3": 0.7586,
+            "recall@5": 0.8966,
+            "recall@10": 0.8966,
+            "mrr": 0.6094
+          },
+          "multi": {
+            "n": 3,
+            "recall@1": 0.3333,
+            "recall@3": 0.5,
+            "recall@5": 0.6667,
+            "recall@10": 0.6667,
+            "mrr": 0.75
+          }
+        },
+        "hybrid": {
+          "cross": {
+            "n": 18,
+            "recall@1": 0.7222,
+            "recall@3": 0.9444,
+            "recall@5": 1.0,
+            "recall@10": 1.0,
+            "mrr": 0.8259
+          },
+          "es": {
+            "n": 8,
+            "recall@1": 0.625,
+            "recall@3": 0.75,
+            "recall@5": 0.875,
+            "recall@10": 0.875,
+            "mrr": 0.6979
+          },
+          "fact": {
+            "n": 29,
+            "recall@1": 0.5517,
+            "recall@3": 0.7586,
+            "recall@5": 0.8966,
+            "recall@10": 0.8966,
+            "mrr": 0.673
+          },
+          "multi": {
+            "n": 3,
+            "recall@1": 0.3333,
+            "recall@3": 0.5,
+            "recall@5": 0.5,
+            "recall@10": 0.6667,
+            "mrr": 0.7222
+          }
+        }
+      },
+      "foreign_in_top5": 0
+    }
+  },
+  "per_question": [
+    {
+      "id": "q01",
+      "agreements": [
+        "tca"
+      ],
+      "rank_before": 2,
+      "rank_after": 2,
+      "foreign_before": 0
+    },
+    {
+      "id": "q02",
+      "agreements": [
+        "tca"
+      ],
+      "rank_before": 7,
+      "rank_after": 2,
+      "foreign_before": 3
+    },
+    {
+      "id": "q03",
+      "agreements": [
+        "tca"
+      ],
+      "rank_before": 4,
+      "rank_after": 3,
+      "foreign_before": 2
+    },
+    {
+      "id": "q04",
+      "agreements": [
+        "tca"
+      ],
+      "rank_before": 6,
+      "rank_after": 5,
+      "foreign_before": 1
+    },
+    {
+      "id": "q05",
+      "agreements": [
+        "tca"
+      ],
+      "rank_before": null,
+      "rank_after": 5,
+      "foreign_before": 3
+    },
+    {
+      "id": "q06",
+      "agreements": [
+        "tca"
+      ],
+      "rank_before": null,
+      "rank_after": null,
+      "foreign_before": 1
+    },
+    {
+      "id": "q07",
+      "agreements": [
+        "tca"
+      ],
+      "rank_before": 4,
+      "rank_after": 3,
+      "foreign_before": 1
+    },
+    {
+      "id": "q08",
+      "agreements": [
+        "tca"
+      ],
+      "rank_before": 2,
+      "rank_after": 2,
+      "foreign_before": 0
+    },
+    {
+      "id": "q09",
+      "agreements": [
+        "tca"
+      ],
+      "rank_before": 3,
+      "rank_after": 3,
+      "foreign_before": 0
+    },
+    {
+      "id": "q10",
+      "agreements": [
+        "tca"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 1
+    },
+    {
+      "id": "q11",
+      "agreements": [
+        "tca"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 1
+    },
+    {
+      "id": "q12",
+      "agreements": [
+        "tca"
+      ],
+      "rank_before": 4,
+      "rank_after": 4,
+      "foreign_before": 0
+    },
+    {
+      "id": "q13",
+      "agreements": [
+        "tca"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 0
+    },
+    {
+      "id": "q14",
+      "agreements": [
+        "tca"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 0
+    },
+    {
+      "id": "q15",
+      "agreements": [
+        "tca"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 0
+    },
+    {
+      "id": "q16",
+      "agreements": [
+        "tca"
+      ],
+      "rank_before": 2,
+      "rank_after": 2,
+      "foreign_before": 0
+    },
+    {
+      "id": "q17",
+      "agreements": [
+        "tca"
+      ],
+      "rank_before": 6,
+      "rank_after": 6,
+      "foreign_before": 0
+    },
+    {
+      "id": "q18",
+      "agreements": [
+        "japan"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 1
+    },
+    {
+      "id": "q19",
+      "agreements": [
+        "japan"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 0
+    },
+    {
+      "id": "q20",
+      "agreements": [
+        "japan"
+      ],
+      "rank_before": null,
+      "rank_after": null,
+      "foreign_before": 0
+    },
+    {
+      "id": "q21",
+      "agreements": [
+        "japan"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 0
+    },
+    {
+      "id": "q22",
+      "agreements": [
+        "japan"
+      ],
+      "rank_before": 5,
+      "rank_after": 5,
+      "foreign_before": 0
+    },
+    {
+      "id": "q23",
+      "agreements": [
+        "japan"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 1
+    },
+    {
+      "id": "q24",
+      "agreements": [
+        "japan"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 0
+    },
+    {
+      "id": "q25",
+      "agreements": [
+        "korea"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 0
+    },
+    {
+      "id": "q26",
+      "agreements": [
+        "korea"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 1
+    },
+    {
+      "id": "q27",
+      "agreements": [
+        "korea"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 3
+    },
+    {
+      "id": "q28",
+      "agreements": [
+        "korea"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 1
+    },
+    {
+      "id": "q29",
+      "agreements": [
+        "korea"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 2
+    },
+    {
+      "id": "q30",
+      "agreements": [
+        "korea"
+      ],
+      "rank_before": 2,
+      "rank_after": 2,
+      "foreign_before": 0
+    },
+    {
+      "id": "q31",
+      "agreements": [
+        "ceta"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 1
+    },
+    {
+      "id": "q32",
+      "agreements": [
+        "ceta"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 0
+    },
+    {
+      "id": "q33",
+      "agreements": [
+        "ceta"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 1
+    },
+    {
+      "id": "q34",
+      "agreements": [
+        "ceta"
+      ],
+      "rank_before": 2,
+      "rank_after": 2,
+      "foreign_before": 1
+    },
+    {
+      "id": "q35",
+      "agreements": [
+        "mercosur"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 0
+    },
+    {
+      "id": "q36",
+      "agreements": [
+        "mercosur"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 0
+    },
+    {
+      "id": "q37",
+      "agreements": [
+        "mercosur"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 1
+    },
+    {
+      "id": "q38",
+      "agreements": [
+        "mercosur"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 0
+    },
+    {
+      "id": "q39",
+      "agreements": [
+        "mercosur"
+      ],
+      "rank_before": null,
+      "rank_after": null,
+      "foreign_before": 0
+    },
+    {
+      "id": "q40",
+      "agreements": [
+        "mercosur"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 1
+    },
+    {
+      "id": "q41",
+      "agreements": [
+        "mercosur"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 0
+    },
+    {
+      "id": "q42",
+      "agreements": [
+        "pem"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 1
+    },
+    {
+      "id": "q43",
+      "agreements": [
+        "pem"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 3
+    },
+    {
+      "id": "q44",
+      "agreements": [
+        "pem"
+      ],
+      "rank_before": 3,
+      "rank_after": 3,
+      "foreign_before": 2
+    },
+    {
+      "id": "q45",
+      "agreements": [
+        "pem"
+      ],
+      "rank_before": 6,
+      "rank_after": 5,
+      "foreign_before": 1
+    },
+    {
+      "id": "q46",
+      "agreements": [
+        "korea",
+        "pem"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 1
+    },
+    {
+      "id": "q47",
+      "agreements": [
+        "korea",
+        "mercosur"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 2
+    },
+    {
+      "id": "q52",
+      "agreements": [
+        "korea"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 0
+    },
+    {
+      "id": "q56",
+      "agreements": [
+        "ceta"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 0
+    },
+    {
+      "id": "q57",
+      "agreements": [
+        "japan"
+      ],
+      "rank_before": 4,
+      "rank_after": 4,
+      "foreign_before": 0
+    },
+    {
+      "id": "q58",
+      "agreements": [
+        "mercosur"
+      ],
+      "rank_before": 1,
+      "rank_after": 1,
+      "foreign_before": 1
+    }
+  ]
+}

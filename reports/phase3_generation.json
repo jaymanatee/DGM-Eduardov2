@@ -269,6 +269,51 @@
         "cites_evidence_when_evidence_retrieved": 0.7391,
         "mean_seconds": 5.08
       }
+    },
+    "hybrid_agreement": {
+      "settings": {
+        "retriever": "hybrid",
+        "top_k": 5,
+        "model": "Qwen/Qwen3-1.7B (thinking off, agreement filter)"
+      },
+      "answers": "reports/phase3_generation_hybrid_agreement.jsonl",
+      "summary": {
+        "accuracy": 0.8281,
+        "answerable_correct": 0.8448,
+        "unanswerable_abstained": 0.6667,
+        "by_kind": {
+          "cross": {
+            "n": 18,
+            "correct": 0.8889
+          },
+          "es": {
+            "n": 8,
+            "correct": 0.875
+          },
+          "fact": {
+            "n": 29,
+            "correct": 0.8621
+          },
+          "multi": {
+            "n": 3,
+            "correct": 0.3333
+          },
+          "none": {
+            "n": 6,
+            "correct": 0.6667
+          }
+        },
+        "n_answerable": 58,
+        "n_unanswerable": 6,
+        "answerable_retrieval_hit": 0.9138,
+        "answerable_abstained": 0.0,
+        "abstained_when_evidence_retrieved": 0.0,
+        "correct_when_evidence_retrieved": 0.8868,
+        "answered_cited": 0.9655,
+        "answered_cites_evidence": 0.6207,
+        "cites_evidence_when_evidence_retrieved": 0.6792,
+        "mean_seconds": 2.01
+      }
     }
   }
 }
