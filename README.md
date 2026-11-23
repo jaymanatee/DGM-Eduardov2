@@ -44,6 +44,16 @@ explicar el resultado.
 ## Demo
  
 ![Demo de ARCA](demo.gif)
+
+Con la API levantada (ver más abajo), `demo.py` recorre las cuatro fases en la terminal, en
+castellano y contra la API de verdad:
+
+```bash
+uv run python demo.py              # las cuatro fases, con una pausa entre pantallas
+uv run python demo.py --fase 4     # solo el agente: emite una declaración y responde normativa
+```
+
+Para ver los pasos del agente uno a uno: `uv run python -m agent.ui`.
  
 ## Arquitectura
  
@@ -52,7 +62,8 @@ flowchart TD
     U[Usuario] --> A
  
     subgraph A[Agente ReAct · fase 4]
-        L[Qwen3-1.7B entrenado<br/>para razonar]
+        L[Qwen3-1.7B<br/>fase 1 + SFT de herramientas]
+        E[Enrutador: busca en la normativa<br/>si la tarea pregunta por ella]
     end
  
     A --> T
@@ -68,7 +79,7 @@ flowchart TD
  
     subgraph R[Base de conocimiento · fase 3]
         R1[29 documentos<br/>EUR-Lex · Comisión · AEAT]
-        R2[Búsqueda híbrida<br/>BM25 + embeddings]
+        R2[Búsqueda híbrida<br/>BM25 + embeddings,<br/>filtrada por acuerdo]
     end
  
     T4 --> V[Veredicto, criterio,<br/>porcentaje y traza]
@@ -76,7 +87,9 @@ flowchart TD
 ```
  
 El cerebro sale de la **fase 1**: Qwen3-1.7B entrenado para razonar sobre reglas de origen, con
-SFT por destilación y después GRPO con recompensas verificables.
+SFT por destilación y después GRPO con recompensas verificables. La **fase 2** le añade encima un
+SFT para usar herramientas, que es lo que lo convierte en un buen agente: sin él, el modelo de la
+fase 1 intenta resolverlo todo de cabeza.
  
 ## Resultados
  
@@ -86,20 +99,33 @@ modelo no ha visto.
 | Fase | Qué mide | Sin la capacidad | Con ella |
 |---|---|---|---|
 | 1 · Razonamiento | Aciertos en 300 problemas de origen | 29,7 % | **67,3 %** |
-| 2 · Herramientas | Respuestas correctas en 200 casos | 50,0 % | **88,7 %** |
-| 3 · Conocimiento | Aciertos en 64 preguntas sobre normativa | 8 % | **81 %** |
-| 4 · Agente | — | — | *pendiente* |
+| 2 · Herramientas | Respuestas correctas en 200 casos | 52,9 % | **92,9 %** |
+| 3 · Conocimiento | Aciertos en 64 preguntas sobre normativa | 8 % | **83 %** |
+| 4 · Agente | Tareas resueltas de 20 que encadenan herramientas, normativa y acciones | 40 % | **60 %** |
+
+En la fase 4, la referencia es la primera versión del agente, y el 60 % es la media de dos
+ejecuciones: con la misma configuración, el resultado varía unos ±10 puntos de una a otra.
  
 Algunos detalles que explican esos números:
  
 - **Fase 1.** El modelo base ni siquiera entrega la respuesta en el formato pedido: solo el 19,7 %
   de sus salidas es válida. Tras el entrenamiento, el 91,3 %. La mejora del GRPO sobre el SFT
   (+8,7 puntos) es estadísticamente significativa.
-- **Fase 2.** Ninguna configuración entrenada emitió una declaración de origen falsa ni se inventó
-  una referencia. La clave fue quitarle al modelo la regla de las manos: desde que la herramienta
-  la busca sola, las cadenas de llamadas pasaron del 50 % al 85 %.
+- **Fase 2.** La clave fue quitarle al modelo la regla de las manos: desde que la herramienta la
+  busca sola, las cadenas de llamadas pasaron del 50 % al 85 %. En toda la fase solo ha salido una
+  declaración de origen falsa: el modelo leyó un envío de 22.090 € como 22,09 € y la emitió sin la
+  autorización del exportador que ese importe exige.
 - **Fase 3.** Sin el corpus, el modelo acierta **0 de las 58** preguntas que tienen respuesta: dice
-  que no lo sabe en 46 y se inventa las 12 que contesta. Con la búsqueda híbrida acierta 48.
+  que no lo sabe en 46 y se inventa las 12 que contesta. Con la búsqueda híbrida acierta 49. Lo
+  que más ayudó fue que el buscador supiera de qué acuerdo es cada pasaje: los textos de los
+  acuerdos son casi idénticos entre sí, y filtrar por el acuerdo que nombra la pregunta sube el
+  Recall@5 de 0,84 a 0,91.
+- **Fase 4.** La mejora no viene de un modelo mejor, sino del bucle. Hay controles que paran los
+  errores del modelo antes de ejecutar nada (importes sin convertir a euros, valores inventados) y
+  un enrutador que busca en la normativa cuando la tarea pregunta por ella. En 6 tareas de
+  conocimiento que el enrutador no había visto, el agente pasa del 33 % al 83 %. El modelo de la
+  fase 1 sin el SFT de herramientas se queda en un 15 %: entrenarlo para razonar de cabeza lo hace
+  peor agente.
 El detalle de cada medida, con sus fallos y lo que no funcionó, está en
 [`EXPERIMENTS.md`](EXPERIMENTS.md).
  
@@ -129,7 +155,7 @@ curl -s localhost:8000/rag -H 'content-type: application/json' \
 Para desarrollo, sin Docker:
  
 ```bash
-uv sync --extra train --extra rag
+uv sync --extra train --extra rag --extra agent
 cp .env.example .env
 uv run arca-api
 ```
@@ -145,7 +171,7 @@ siguiendo [`docs/fase1_reproducir.md`](docs/fase1_reproducir.md) y
 | 1 · Razonamiento | [`rlm/`](rlm/README.md) | Generador de problemas verificables, motor de origen, destilación con Qwen3-4B, SFT con LoRA, GRPO con tres recompensas y un paso del algoritmo escrito a mano |
 | 2 · Herramientas | [`tool_use/`](tool_use/README.md) | Cinco herramientas reales, el bucle de tool use escrito a mano, un banco de 31 casos y 2.400 trayectorias sintéticas para el SFT |
 | 3 · Conocimiento | [`rag/`](rag/README.md) | Descarga reproducible del corpus, cuatro estrategias de troceado, BM25, embeddings e híbrido, y generación con citas verificadas |
-| 4 · Agente | [`agent/`](agent/README.md) | El bucle ReAct, la memoria y el banco de tareas |
+| 4 · Agente | [`agent/`](agent/README.md) | El bucle ReAct con sus controles, el enrutador de conocimiento, la memoria, un banco de 20 tareas con las respuestas calculadas por el motor, y la comparación con un agente de código (smolagents) |
 | — | [`api/`](api/README.md) | La API que expone las cuatro fases |
  
 El dominio tiene una propiedad que lo hace ideal para esto: **la regla de origen es un algoritmo**,
@@ -161,6 +187,9 @@ automático, y con él se puede entrenar por refuerzo y medir sin anotar nada a 
 - **El modelo todavía se equivoca leyendo.** Confundir Suiza con la UE, copiar mal un código o
   elegir mal la subdivisión de una regla siguen siendo sus fallos más frecuentes, y es la
   limitación de fondo que ninguna de las cuatro fases resuelve.
+- **El agente puede decir que ha hecho algo que no ha hecho.** En una de las 20 tareas escribió
+  que había emitido la declaración sin llamar a la herramienta. No se emitió nada, pero la
+  respuesta lo afirmaba: lo que cuenta es el fichero de la declaración y la traza, no el texto.
 ## Equipo
  
 - Enrique Fernández-Baíllo Rodríguez de Tembleque

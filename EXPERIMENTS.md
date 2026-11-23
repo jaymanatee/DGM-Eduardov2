@@ -1777,6 +1777,9 @@ Volvimos a puntuar la v4 con estos criterios, solo para comparar.
 - **Queda por medir si el SFT ha estropeado el razonamiento de origen de la fase 1.** Es el mismo
   LoRA, entrenado más. No afecta al endpoint `/tools`, pero sí a la idea de un único adaptador.
 
+Nota posterior (2026-11-23): medido de nuevo con el código actual, `sft_nothink` da un 92,9 % de
+respuestas y `base` un 52,9 %, en un test regenerado que ya no es este (entrada de ese día).
+
 ### 2026-11-11 · Fase 2 · El endpoint con el SFT, un corte del BCE y un tipo de cambio inventado
 
 **Qué queríamos saber.** Si `POST /tools` funciona de punta a punta con `sft_nothink`, servido
@@ -2179,6 +2182,9 @@ el modelo con la capacidad de la fase y cuántas sin ella.
   las mitades), que es la métrica con la que elegimos.
 - **El fallo que más se repite es confundir acuerdos** (q27, q43, q59). La cabecera lo resolvió en la
   recuperación, pero vuelve a aparecer en la generación.
+
+Nota posterior (2026-11-23): el filtro por acuerdo arregla q27 y deja el híbrido servido en 53 de
+64 (entrada de ese día).
 
 ### 2026-11-16 · Fase 3 · Reranker Qwen3-Reranker-0.6B: medido y desactivado
 
@@ -2610,7 +2616,7 @@ trazas de las tareas que empeoraron.
   aciertos limpios, tarda lo mismo y es el que sirve `/tools`. Lo confirmamos con las repeticiones.
 - **Dos agujeros del bucle, sin arreglar todavía:** un JSON roto repetido no cuenta como llamada
   repetida, y una llamada escrita como "Action: … with {…}" no se recupera. Los dejamos para no
-  cambiar el código antes de repetir las medidas.
+  cambiar el código antes de repetir las medidas. (Arreglados en el bucle v2, 2026-11-23.)
 - **Siguiente:** repetir la v1 dos veces más para dar media y rango, y medir la memoria y el agente
   de código.
 
@@ -2750,3 +2756,294 @@ antes.
 - **Lo que sí sugiere `conocimiento-01`:** buscar y convertir en un mismo bloque es lo que más le
   cuesta al bucle JSON (0 de 22 ejecuciones), y el código lo resolvió una vez. Con un modelo
   mayor, el formato de código podría ganar en esas tareas.
+
+### 2026-11-23 · Fase 2 · Medida de nuevo con el código actual: 92,9 % de respuestas, en un test sintético que ya no es el de entonces
+
+**Qué queríamos saber.** La v1 de la fase 4 cambió las descripciones de `tool_use/tools.py`
+(entrada del 2026-11-22), y eso llega también a `/tools`. El 88,7 % del README se midió con las
+descripciones anteriores. El script de corrección ejecuta el código actual, así que había que
+medir de nuevo lo que se entrega.
+
+**Qué hicimos.**
+- Regenerar el test sintético (`uv run python -m tool_use.sft.build --out outputs/tool_sft`) y
+  evaluar `base` y `sft_nothink` en el banco de 31 casos y en los 200 del test. Resultados en
+  `reports/phase2_v1tools_{base,sft_nothink}_{bench,synth}.json`.
+- Comparar el test regenerado con el evaluado el 2026-11-10.
+
+**Qué pasó.**
+- **El test regenerado no es el mismo:** solo 109 de las 200 trayectorias coinciden. No es por la
+  v1. Generado en el commit anterior a `cfaab2c` (17/11, el arreglo del parser para los CTH con
+  exclusión, de la entrada de cobertura), coincide en las 200. Al cambiar qué reglas puede leer el
+  motor, cambian sus veredictos y, con ellos, las trayectorias. La huella del test actual empieza
+  por `65a24153`.
+- **Test sintético (200), entonces → ahora:**
+
+  | | Selección | Llamadas | Respuesta | Decl. falsas | Ref. inventadas | s/caso |
+  |---|---|---|---|---|---|---|
+  | `base` | 89,5 → 88,5 % | 49,0 → 50,0 % | 50,0 → 52,9 % | 1 → 0 | 2 → 0 | 5,7 → 6,0 |
+  | `sft_nothink` | 98,5 → 96,5 % | 85,5 → 87,0 % | 88,7 → **92,9 %** | 0 → **1** | 0 → 0 | 3,7 → 4,0 |
+
+- **Banco (31), entonces → ahora:**
+
+  | | Selección | Argumentos | Multi-llamada (13) | Respuesta (20) | Llamadas fallidas |
+  |---|---|---|---|---|---|
+  | `base` | 29 → 29 | 27 → 29 | 8 → 7 | 14 → 16 | 11 de 55 → 13 de 50 |
+  | `sft_nothink` | 31 → 31 | 30 → 29 | 12 → 11 | 18 → 17 | 3 de 32 → 5 de 32 |
+
+- **La declaración falsa es `test-00006`:** vajilla de porcelana a Corea, originaria por CTH. El
+  usuario escribe "consignment value 22,090 euros" y el modelo pasa `consignment_value_eur: 22.09`.
+  Con 22,09 € no hace falta la autorización del exportador, así que la declaración sale sin ella,
+  cuando un envío de 22.090 € la necesita. El precio franco fábrica de una pieza es 27,92 €: el
+  envío que el modelo declara vale menos que una sola pieza.
+- **El generador del SFT no le enseña que eso es imposible:** en 18 de sus 135 declaraciones de
+  entrenamiento, el valor del envío es menor que el precio franco fábrica de una unidad.
+
+**Qué concluimos.**
+- **El README pasa a 92,9 %,** con la huella del test. No se puede comparar con el 88,7 %, que se
+  midió en otro test. Lo que sí se mantiene es la comparación medida en el mismo test: `base`
+  52,9 % frente a `sft_nothink` 92,9 %.
+- **En el banco, las diferencias caben en el ruido de ±3 casos** de la entrada de la v5.
+- **La declaración falsa es un error de lectura del separador de miles,** y ninguna herramienta lo
+  para. Probamos a rechazar en `issue_origin_statement` un envío que valga menos que el precio
+  franco fábrica, y rompió `tests/test_tool_sft.py`: el propio generador produce esas 18
+  declaraciones. Lo quitamos. Si se vuelve a entrenar, primero hay que corregir el generador.
+
+### 2026-11-23 · Fase 4 · Enrutador de conocimiento: el bucle busca cuando el modelo no lo hace
+
+**Qué queríamos saber.** Por qué la categoría de conocimiento sigue en 0-33 %, y si se arregla
+sin reentrenar. En las tres ejecuciones de la v1, ninguno de los tres cerebros llamó a
+`search_knowledge_base` en el banco: 0 búsquedas en 27 intentos (3 tareas × 3 cerebros × 3
+ejecuciones). El RAG de la fase 3 acierta el 81 % de su dorado, pero dentro del agente nadie lo
+consultaba.
+
+**Qué hicimos.**
+- **Las dos causas que vemos:**
+  - el SFT de herramientas de la fase 2 se entrenó antes de que existiera la base de
+    conocimiento, con trayectorias de "pregunta de concepto: respondo sin herramienta";
+  - cuando la tarea también trae números, el modelo sin ajustar va directo al cálculo.
+- **`agent/router.py`: el bucle decide en vez del modelo,** igual que la fase 3 siempre recupera.
+  - `question_clauses` saca las preguntas de la tarea (frases con "?") y las parte donde empieza
+    una segunda pregunta ("Are they originating under CETA, and how long…?").
+  - **Un clasificador pequeño puntúa cada pregunta:** si pregunta cómo funcionan las normas
+    (plazos, umbrales, quién puede hacer qué) o algo que dan las herramientas (un veredicto, una
+    regla, un tipo de cambio).
+    - Rasgos: n-gramas de 3 a 5 caracteres y de 1 a 2 palabras, con hashing a 2²⁰ dimensiones.
+    - Modelo: regresión logística entrenada con descenso de gradiente en NumPy y clases
+      equilibradas. Sin dependencias nuevas; se entrena al arrancar, en unos segundos.
+  - **Datos (`agent/router_examples.jsonl`, 1.030 ejemplos, 88 positivos):**
+    - positivos: las preguntas del dorado de la fase 3, menos 9 apartadas (q25, q27 y q32, de las
+      que salen las tareas de conocimiento del banco, y q01, q10, q18, q26, q53 y q57), más las
+      preguntas de concepto del train sintético de la fase 2;
+    - negativos: el resto del train sintético.
+  - **Si una pregunta pasa de 0,5 (dos como mucho),** el bucle llama a `search_knowledge_base`
+    antes del primer paso del modelo, con los 3 primeros pasajes. Si la pregunta no nombra el
+    acuerdo y la tarea sí, se lo añade. La observación lleva una nota: responder esa parte con los
+    pasajes, citarlos, y que un pasaje de otro acuerdo no responde. Estas llamadas salen en la
+    traza como las demás y cuentan para `max_steps`.
+  - `ARCA_AGENT_ROUTER=1` lo activa.
+- **Dos arreglos antes de medir.** La primera versión mandaba a buscar preguntas de veredicto
+  cuando nombraban un acuerdo ("Are they originating under the TCA?"): los positivos del dorado
+  nombran acuerdos mucho más que los negativos del sintético, y el clasificador aprendió eso. Ahora
+  el nombre del acuerdo y de los países se sustituye por una marca común, las preguntas de
+  veredicto se excluyen con una expresión regular y las de menos de 4 palabras no cuentan.
+- **Comprobación sin modelo** (`python -m agent.router evaluate`):
+
+  | Conjunto | Detectadas | Falsos positivos |
+  |---|---|---|
+  | Dorado apartado | 7 de 8 | — |
+  | Banco de la fase 2 (31) | 5 de 5 | 1 de 12 ("¿qué puedes hacer por mí?") |
+  | Test sintético de la fase 2 (200) | 11 de 11 | 4 de 107 (dos del tiempo, dos de reglas de países sin acuerdo) |
+  | Banco de la fase 4 (20) | las 3 de conocimiento | `imposible-02`, con 0,504 |
+
+- **Un banco aparte de 6 tareas,** `agent/bench/tasks_knowledge.jsonl`, escrito a partir de las
+  preguntas apartadas: cuatro de solo conocimiento (validez en el TCA y en UE-Japón, conservación
+  en UE-Corea, caducidad del REX) y dos que mezclan conocimiento y evaluación (un horno a Japón con
+  el límite de los pequeños paquetes, y una lavadora al Reino Unido con la validez de la
+  declaración del proveedor). Se midió sin el enrutador (`TAG=v1k`) y con él (`TAG=v2k`).
+- **El banco principal con el enrutador:** `TAG=v2 ARCA_AGENT_ROUTER=1`, una ejecución de `main`
+  y otra de `sft_nothink`.
+
+**Qué pasó.**
+- **Tareas apartadas (6):**
+
+  | | Sin enrutador | Con enrutador |
+  |---|---|---|
+  | `base` | 50 % | **100 %** |
+  | `thinking` | 50 % | **100 %** |
+  | `rlm` con `sft_think` | 33 % | **83 %** |
+
+  Sin el enrutador, en las tareas que solo preguntan un dato los modelos sí buscan a veces (5, 4
+  y 2 búsquedas en las 6 tareas), y aciertan las tres más conocidas. Las otras tres fallan en
+  todos los cerebros. Con el enrutador, todas las búsquedas las hace el bucle (6 por cerebro): el
+  modelo no añade ninguna.
+- **Banco principal:**
+
+  | | v1 (media de 3) | v2 (1 ejecución) | Argumentos exactos v2 |
+  |---|---|---|---|
+  | `base` | 52 % | 55 % | 5/17 |
+  | `thinking` | 53 % | 55 % | 6/17 |
+  | `rlm` con `sft_think` | 55 % | 65 % | 12/17 |
+  | `rlm` con `sft_nothink` | 57 % (50-60) | 55 % | 10/17 |
+
+  - **Conocimiento pasa del 0-33 % al 67 % en `base`, `thinking` y `sft_think`.** Las búsquedas
+    salen todas del enrutador (4 por cerebro: las 3 de conocimiento e `imposible-02`). Con
+    `sft_nothink` se queda en el 33 %, como en la v1.
+  - **El coste es `imposible-02`,** el acuerdo con Australia. Pasaba en las tres ejecuciones de la
+    v1 con `base` y `rlm`, y ahora falla con los dos: le llegan pasajes de otros acuerdos y los usa
+    para responder, aunque la nota le diga que no responden.
+  - Fuera de conocimiento e `imposible-02`, los cambios son de una o dos tareas sueltas.
+
+**Qué concluimos.**
+- **El enrutador resuelve lo que tenía que resolver.** La prueba más fiable son las tareas
+  apartadas, que el clasificador no vio: de 33-50 % a 83-100 % en los tres cerebros.
+- **En el banco principal se nota poco en el total,** porque solo 3 de las 20 tareas son de
+  conocimiento. La subida del 65 % de `sft_think` es una sola ejecución.
+- **Su único error en el banco tiene un coste real.** Con 0,504 está justo en el umbral. Subirlo a
+  0,55 lo evitaría sin perder ninguna tarea de conocimiento, pero sería ajustar el umbral mirando
+  el banco con el que medimos, así que lo dejamos en 0,5.
+- **Con un modelo mayor podría sobrar.** El clasificador no depende del modelo, pero un modelo que
+  busque solo no lo necesita. Por eso va detrás de una variable.
+
+### 2026-11-23 · Fase 4 · Bucle v2: los dos agujeros de la v1 y el valor del envío
+
+**Qué queríamos saber.** Cerrar los dos agujeros que dejamos abiertos en la v1 y proteger el
+valor del envío de la declaración, sin medir todavía (va en la v3, junto con el filtro de la
+fase 3).
+
+**Qué hicimos.** En `agent/react_agent.py`, con tests en `tests/test_agent.py`:
+- **Llamadas escritas como "`nombre` with {…}" o "con {…}":** si el JSON es válido y nombra una
+  herramienta registrada, pasa a ser una llamada (`recover_named_call`). Si no es válido, el modelo
+  recibe un error que dice dónde se rompe (`where_json_breaks`), en vez de quedarse el texto como
+  respuesta.
+- **El mismo JSON roto repetido cuenta como llamada repetida,** así que el bucle corta igual que con
+  cualquier otra repetición en vez de agotar los pasos.
+- **Valor del envío:** `issue_origin_statement` no se ejecuta si `consignment_value_eur` no es
+  ninguno de los números de la tarea, leídos con punto y con coma decimal
+  (`consignment_not_given`).
+
+**Qué concluimos.**
+- **Ninguno de estos controles tiene efecto en el banco si el modelo no comete el error,** así que
+  no deberían mover el acierto. En la v2, `thinking` repitió JSON rotos en `conocimiento-03` (10
+  pasos) y en `faltan-datos-01`.
+- **El control del valor del envío no habría parado `test-00006` de la fase 2:** "22,090" leído con
+  coma decimal es 22,09, que sí está en la tarea. Lo que lo pararía es comparar con el precio franco
+  fábrica, que choca con el generador (entrada de la fase 2 de hoy).
+
+### 2026-11-23 · Fase 3 · Filtro por acuerdo: el buscador deja de mezclar acuerdos
+
+**Qué queríamos saber.** Si quitar de la recuperación los pasajes de acuerdos que la pregunta no
+nombra arregla el fallo que más se repite en la fase 3: responder con el dato de otro acuerdo (q27,
+q43, q59).
+
+**Qué hicimos.**
+- **`rag/agreements.py`:**
+  - `agreements_named` encuentra los acuerdos que nombra la pregunta, por nombre o por país socio,
+    en inglés y en español;
+  - `agreement_of` da el acuerdo de cada documento por su ruta (`tca/`, `korea/`…, o el prefijo de
+    la guía, `guides/tca_…`);
+  - los documentos generales (notas NC, la guía de la Comisión, las guías de la AEAT) no son de
+    ningún acuerdo y siempre se quedan.
+- **`rag/retriever.py`:** cada `search` acepta un predicado `keep` sobre la fuente. Se aplica antes
+  del top k y, en el híbrido, antes de los 20 de cada retriever. Así siempre devuelve k pasajes.
+  `AgreementFilter` lo construye a partir de la pregunta, y si la pregunta no nombra ningún acuerdo
+  del corpus (o nombra Australia), no filtra nada.
+- **`ARCA_RAG_AGREEMENT_FILTER=1`** lo activa en `/rag` y en `search_knowledge_base` del agente.
+  Con el reranker, se filtra antes de reordenar.
+- **Medida:** `uv run python -m rag.evaluate_filter` (recuperación con y sin filtro, configuración
+  servida, λ = 0,3 sin volver a elegirlo), y
+  `ARCA_RAG_AGREEMENT_FILTER=1 uv run python -m rag.evaluate_generation --retriever hybrid --label
+  hybrid_agreement` (respuestas).
+
+**Qué pasó.**
+- **Recuperación** (`reports/phase3_agreement_filter.json`; 51 de las 58 preguntas nombran un
+  acuerdo):
+
+  | | R@1 | R@3 | R@5 | R@10 | MRR |
+  |---|---|---|---|---|---|
+  | BM25 sin / con filtro | 0,371 / 0,414 | 0,491 / 0,534 | 0,560 / 0,621 | 0,681 / 0,690 | 0,472 / 0,522 |
+  | Denso sin / con filtro | 0,500 / 0,500 | 0,759 / 0,767 | 0,879 / 0,897 | 0,914 / 0,914 | 0,668 / 0,677 |
+  | **Híbrido sin / con filtro** | 0,603 / 0,603 | 0,741 / **0,802** | 0,836 / **0,905** | 0,897 / 0,914 | 0,713 / **0,726** |
+
+  - **En el top 5 del híbrido había 38 pasajes de un acuerdo que la pregunta no nombra.** Con el
+    filtro, 0.
+  - **Mejora el rango de 6 preguntas** (q02, q03, q04, q05, q07 y q45) **y no empeora ninguno.** En
+    las `cross`, R@5 pasa de 0,889 a 1,000.
+  - **Ninguna evidencia del dorado queda fuera** (lo comprueba un test).
+  - Con el filtro, el mejor λ sería 0,4. No lo cambiamos.
+  - Sin filtro, los números coinciden con los de la fase 3 salvo en la tercera cifra (MRR del
+    híbrido 0,713 frente a 0,716).
+- **Respuestas** (64 preguntas):
+
+  | Variante | Total | Con respuesta (58) | `cross` | Sin respuesta (6) |
+  |---|---|---|---|---|
+  | Híbrido | 52 (81 %) | 48 (83 %) | 83 % | 4 |
+  | **Híbrido con filtro** | **53 (83 %)** | **49 (84 %)** | **89 %** | 4 |
+  | Denso, como referencia | 54 (84 %) | 50 (86 %) | 78 % | 4 |
+
+  - **Arregla q02, q27 y q44.** q27 es el caso de siempre: ahora responde los 1.000 USD de Corea y
+    no los 500 € de otro régimen.
+  - **Rompe q18 y q34,** las dos con la evidencia recuperada antes y después. En q18, con los
+    pasajes del propio acuerdo con Japón, da las cifras del lado de la UE (500 € y 1.200 €) en vez
+    de los 100.000 yenes. Es un error de lectura del generador, no del filtro.
+  - **q43 sigue fallando** con la evidencia recuperada: responde el 10 % de la guía general de la
+    Comisión y deja el 15 % del PEM para el peso. q59 (Australia) también falla, porque no nombra
+    ningún acuerdo del corpus y no se filtra.
+
+**Qué concluimos.**
+- **El filtro arregla la recuperación** (R@5 de 0,836 a 0,905, todas las `cross` dentro del top 5).
+  **En las respuestas gana una pregunta:** con la evidencia delante, lo que queda es el generador de
+  1,7B leyendo mal.
+- **Se activa por defecto.** No usa GPU, no empeora la recuperación de ninguna pregunta, y en el
+  agente evita que una búsqueda devuelva pasajes de otro acuerdo, que el modelo lee peor que el
+  generador de la fase 3. Las cifras de `/rag` pasan a 53 de 64 (83 %) y R@5 0,905.
+- **Aviso:** los patrones de `rag/agreements.py` se escribieron conociendo el dorado. Solo nombran
+  acuerdos y países, nada propio de ninguna pregunta, pero la mejora en el dorado es un techo. Un
+  test comprueba que reconocen también las 6 tareas apartadas del agente.
+- **En las tareas del agente, los países de origen de los materiales** ("gear sets from Japan")
+  añaden acuerdos al filtro. Eso solo lo debilita: nunca quita la evidencia.
+
+### 2026-11-23 · Fase 4 · v3: enrutador, filtro y bucle v2 juntos, y los dos activos por defecto
+
+**Qué queríamos saber.** Lo que se entrega: el agente con el enrutador, el filtro por acuerdo y
+el bucle v2, medido en las mismas condiciones que la v1 y la v2.
+
+**Qué hicimos.** `TAG=v3 ARCA_AGENT_ROUTER=1 ARCA_RAG_AGREEMENT_FILTER=1 sh
+agent/run_evaluations.sh main`, una ejecución. Comparación con
+`uv run python -m agent.analyze` sobre v1, v1b, v1c, v2 y v3 (`reports/phase4_v3.md`).
+
+**Qué pasó.**
+
+| | v1 (media de 3) | v2 | v3 | Media v2-v3 | Argumentos exactos v3 | Aciertos limpios v3 |
+|---|---|---|---|---|---|---|
+| `base` | 52 % | 55 % | 60 % | 57,5 % | 5/17 | 4 |
+| `thinking` | 53 % | 55 % | 60 % | 57,5 % | 6/17 | 7 |
+| **`rlm` con `sft_think`** | 55 % | 65 % | 55 % | **60 %** | **12/17** | **10** |
+
+- **El enrutador se repite:** conocimiento al 67 % en los tres cerebros, igual que en la v2. El
+  coste también: `imposible-02` falla con `base` y `rlm` en las dos ejecuciones.
+- **El filtro estaba activo:** las búsquedas de la v3 no devuelven ningún pasaje de un acuerdo que
+  la tarea no nombre (en la v2, uno).
+- **`rlm` baja de 65 % a 55 % por dos tareas,** `veredicto-01` y `declaracion-02`. El resto de sus
+  tareas sale igual que en la v2. Las dos ya cambiaban entre las ejecuciones de la v1
+  (`veredicto-01` falló en 2 de 3; `declaracion-02`, en 1 de 3). En `declaracion-02` evalúa bien,
+  y después escribe en texto que emite la declaración, con el valor del envío y el REX correctos,
+  sin llamar a `issue_origin_statement`. No se emite nada, pero la respuesta dice que sí.
+- **El bucle v2 apenas se pone a prueba:** en la v3 no hay ningún JSON roto, así que no hay
+  repeticiones que cortar.
+- **`base` acierta con los argumentos mal en 8 de sus 12 aciertos;** `rlm`, en 1 de 11.
+
+**Qué concluimos.**
+- **La medida final es la media de la v2 y la v3:** los tres cerebros suben unos 5 puntos sobre la
+  v1 (de 52-55 % a 57,5-60 %), y la subida sale de las tareas de conocimiento. El resto cambia
+  dentro del ruido de ±10 puntos entre ejecuciones.
+- **El agente se queda con `sft_think`.** En éxito los tres están cerca, pero sus aciertos son los
+  limpios (10, frente a 4 de `base`) y es el que rellena bien la llamada (12 de 17).
+- **Un fallo nuevo que hay que contar:** en `declaracion-02`, `rlm` afirma haber emitido una
+  declaración que no ha emitido. No tiene efectos (no se escribe ningún fichero), pero engaña al
+  usuario. El bucle no comprueba que lo que dice la respuesta final coincida con las llamadas
+  hechas; sería el siguiente control.
+- **El enrutador y el filtro pasan a estar activos por defecto** (`ARCA_AGENT_ROUTER` y
+  `ARCA_RAG_AGREEMENT_FILTER` valen `1` si no se dan). `=0` los apaga. Así, el código tal como se
+  entrega es el que se ha medido, sin depender de variables de entorno.
+- **Siguiente:** una ejecución de comprobación sin variables de entorno (`TAG=v3b`), para confirmar
+  que los valores por defecto dan lo mismo.
