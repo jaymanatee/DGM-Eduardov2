@@ -25,9 +25,10 @@ retriever with λ = 0.3, chosen by MRR on the gold set.
 
 The generator is configured from environment variables, as in phase 2:
 
-* ``ARCA_RAG_MODEL``     model id (default ``Qwen/Qwen3-1.7B``). The phase-1 RLM is a 0.6B
-  model trained to solve origin calculations in a ``<think>/<answer>`` format, not to read
-  passages and cite them, so the default is the instruction-tuned base model.
+* ``ARCA_RAG_MODEL``     model id (default ``Qwen/Qwen3-1.7B``, without adapter). The phase-1
+  RLM is a LoRA on this same model, trained to solve origin calculations in a
+  ``<think>/<answer>`` format rather than to read passages and cite them; it has not been
+  measured as the generator.
 * ``ARCA_RAG_ADAPTER``   optional LoRA adapter, merged into the model as in phases 1 and 2
 * ``ARCA_RAG_THINKING``  ``0`` (default) answers without thinking, ``1`` lets Qwen3 think.
   On the same sample, thinking took 5 to 10 times longer and cited less.
