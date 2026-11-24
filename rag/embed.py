@@ -54,6 +54,12 @@ def cosine_similarity(queries: np.ndarray, passages: np.ndarray) -> np.ndarray:
 CACHE_DIR = Path(__file__).parent / "index" / "cache"
 
 
+# Loaded embedding models, shared by every CachedEmbedder of the process: the RAG of POST /rag
+# and the agent's knowledge base each build their own pipeline, and with one model each the
+# API filled the 16 GB GPU (283 MiB free with the four phases loaded).
+_LOADED: dict[tuple[str, str | None], Embedder] = {}
+
+
 class CachedEmbedder:
     """An ``Embedder`` that remembers every passage it has embedded, on disk.
 
@@ -76,7 +82,10 @@ class CachedEmbedder:
     @property
     def embedder(self) -> Embedder:
         if self._embedder is None:
-            self._embedder = Embedder(self.model_id, device=self.device)
+            key = (self.model_id, self.device)
+            if key not in _LOADED:
+                _LOADED[key] = Embedder(self.model_id, device=self.device)
+            self._embedder = _LOADED[key]
         return self._embedder
 
     @staticmethod

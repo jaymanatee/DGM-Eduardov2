@@ -320,7 +320,8 @@ def test_legitimate_variations_are_not_penalised():
     assert scores["calls_ok"]
     lookup = {"name": "get_origin_rule", "ok": True, "arguments": {}, "result": {}}
     assert score_trajectory(t, [lookup, *calls], answer, REGISTRY)["selection_ok"]
-    t = next(t for t in SMALL["train"] if t.kind == "rate" and t.outcome == "rate")
+    # Any split: whether a 3 % draw of one split happens to hold this pair is a lucky accident.
+    t = next(t for ts in SMALL.values() for t in ts if t.kind == "rate" and t.outcome == "rate")
     calls, answer = _gold(t)
     calls[0]["arguments"]["amount"] = 1  # one unit converted along the way
     assert score_trajectory(t, calls, answer, REGISTRY)["calls_ok"]

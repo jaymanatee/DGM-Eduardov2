@@ -141,6 +141,61 @@ def test_conditions_the_engine_cannot_check_are_left_to_a_human(text):
     }
 
 
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        # The exclusion names whole headings, which is what the engine can express.
+        ("A change from any other heading, except from heading 8431.", ["8431"]),
+        ("A change from any other heading, except from 8714.", ["8714"]),
+        (
+            "CTH: All non-originating materials used in the production of the good have undergone "
+            "a change in tariff classification at the 4-digit level (tariff heading) except from "
+            "non-originating materials of heading 7010.",
+            ["7010"],
+        ),
+        (
+            "A change from any other heading, except from heading 9108 to heading 9114.",
+            ["9108", "9109", "9110", "9111", "9112", "9113", "9114"],
+        ),
+    ],
+)
+def test_a_cth_that_excludes_whole_headings_is_machine_readable(text, expected):
+    # 'CTH EXCEPT' is a second label on the same criterion, not a second criterion.
+    for rule_class in (["CTH"], ["CTH", "CTH EXCEPT"]):
+        assert tools._criterion(text, rule_class) == {
+            "kind": "CTH",
+            "excluded_headings": expected,
+        }
+
+
+@pytest.mark.parametrize(
+    "text, rule_class",
+    [
+        # Only 7301.20 is excluded, not all of 7301, and the engine excludes whole headings.
+        ("A change from any other heading, except from subheading 730120.", ["CTH"]),
+        # Only those articles of 6406 are excluded, not the whole heading.
+        (
+            "A change from any other heading, except from assemblies of uppers affixed to inner "
+            "soles or to other sole components of heading 6406.",
+            ["CTH", "CTH EXCEPT"],
+        ),
+        # 'any heading except X' does not ask for a change of classification at all, so reading it
+        # as CTH would forbid same-heading materials that the rule allows.
+        ("Manufacture from materials of any heading, except from heading 6406.", ["AH EXCEPT"]),
+    ],
+)
+def test_an_exclusion_narrower_than_a_heading_is_left_to_a_human(text, rule_class):
+    """Taken as the heading it names, each of these makes the engine stricter than the rule, and a
+    false 'not originating' costs the exporter the tariff. They go to not_machine_readable."""
+    assert tools._criterion(text, rule_class) is None
+
+
+def test_an_exclusion_clause_with_no_heading_in_it_is_not_read_as_a_range():
+    assert tools._excluded_headings(" from non-originating active cathode materials.") is None
+    assert tools._excluded_headings(" that of the product") is None
+    assert tools._excluded_headings(" from heading 8503 and heading 8529.") == ["8503", "8529"]
+
+
 def test_origin_rule_japan_ignores_cptpp_and_reads_fob(http):
     http.response = FakeResponse(roo("JP"))
     result = get_origin_rule(hs_code="850760", agreement="UE-JP")

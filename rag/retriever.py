@@ -3,6 +3,11 @@
 ``BM25Retriever`` is complete: it is the keyword baseline you compare against.
 ``DenseRetriever`` and ``HybridRetriever`` are yours. All three return the same ``Hit``
 objects so that ``rag/generate.py`` and ``rag/evaluate.py`` do not care which one is used.
+
+Every ``search`` takes an optional ``keep``: a predicate on the document source of a chunk.
+Chunks it rejects are never returned, and the top k is filled with the next ones that pass.
+``AgreementFilter`` builds it from the query (``rag/agreements.py``): a question that names
+the Korea agreement only gets passages of the Korea agreement or of general documents.
 """
 
 from __future__ import annotations
@@ -10,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,8 +31,19 @@ class Hit:
     score: float
 
 
+Keep = Callable[[str], bool]  # document source -> may it be retrieved
+
+
 def tokenize(text: str) -> list[str]:
     return re.findall(r"\w+", text.lower())
+
+
+def _top(chunks: list[Chunk], scores, top_k: int, keep: Keep | None) -> list[int]:
+    """Indices of the ``top_k`` best scores among the chunks ``keep`` accepts (stable)."""
+    order = np.argsort(-np.asarray(scores, dtype=np.float64), kind="stable")
+    if keep is not None:
+        order = [i for i in order if keep(chunks[i].source)]
+    return [int(i) for i in order[:top_k]]
 
 
 class BM25Retriever:
@@ -40,9 +57,9 @@ class BM25Retriever:
         self.chunks = chunks
         self.index = BM25Okapi([tokenize(c.text) for c in chunks])
 
-    def search(self, query: str, top_k: int = 5) -> list[Hit]:
+    def search(self, query: str, top_k: int = 5, keep: Keep | None = None) -> list[Hit]:
         scores = self.index.get_scores(tokenize(query))
-        order = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
+        order = _top(self.chunks, scores, top_k, keep)
         return [Hit(self.chunks[i], float(scores[i])) for i in order]
 
 
@@ -86,9 +103,9 @@ class DenseRetriever:
         query_vector = self.embedder.embed_queries([query], instruction=self.instruction)[0]
         return self.vectors @ np.asarray(query_vector, np.float32)
 
-    def search(self, query: str, top_k: int = 5) -> list[Hit]:
+    def search(self, query: str, top_k: int = 5, keep: Keep | None = None) -> list[Hit]:
         scores = self.scores(query)
-        order = np.argsort(-scores, kind="stable")[:top_k]
+        order = _top(self.chunks, scores, top_k, keep)
         return [Hit(self.chunks[i], float(scores[i])) for i in order]
 
 
@@ -117,9 +134,14 @@ class HybridRetriever:
     ):
         self.bm25, self.dense, self.weight_bm25, self.pool = bm25, dense, weight_bm25, pool
 
-    def search(self, query: str, top_k: int = 5) -> list[Hit]:
+    @property
+    def chunks(self) -> list[Chunk]:
+        return self.bm25.chunks
+
+    def search(self, query: str, top_k: int = 5, keep: Keep | None = None) -> list[Hit]:
         pool = max(self.pool, top_k)
-        bm25_hits, dense_hits = self.bm25.search(query, pool), self.dense.search(query, pool)
+        bm25_hits = self.bm25.search(query, pool, keep=keep)
+        dense_hits = self.dense.search(query, pool, keep=keep)
         return self.fuse(bm25_hits, dense_hits, self.weight_bm25, top_k)
 
     @staticmethod
@@ -133,3 +155,25 @@ class HybridRetriever:
         }
         order = sorted(fused, key=lambda cid: fused[cid], reverse=True)[:top_k]
         return [Hit(chunks[cid], fused[cid]) for cid in order]
+
+
+class AgreementFilter:
+    """``base`` restricted to the agreements the query names (``rag/agreements.py``).
+
+    A query that names no agreement is passed through unchanged. The filter is applied
+    inside each retriever, before the top k (and before the hybrid's pools), so the k
+    passages returned are the best k that pass, not fewer.
+    """
+
+    def __init__(self, base):
+        self.base = base
+        self.name = f"{getattr(base, 'name', 'base')}+agreement"
+        self.chunks = getattr(base, "chunks", None)
+
+    def search(self, query: str, top_k: int = 5) -> list[Hit]:
+        from rag.agreements import keep_for
+
+        keep = keep_for(query)
+        if keep is None:
+            return self.base.search(query, top_k=top_k)
+        return self.base.search(query, top_k=top_k, keep=keep)

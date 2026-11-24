@@ -32,7 +32,7 @@ tocarlo: basta con implementar los puntos de entrada que espera.
 | 1 | `rlm.inference.ReasoningModel` | `ARCA_RLM_ADAPTER`, `ARCA_RLM_BASE_MODEL`, `ARCA_RLM_VERIFIER` |
 | 2 | `tool_use.executor.ToolLoop` | herramientas registradas en `tool_use.tools.default_registry`; `ARCA_TOOLS_MODEL` (y el resto de `ARCA_TOOLS_*`, ver `.env.example`) |
 | 3 | `rag.generate.RagPipeline` | corpus en `rag/corpus/`, índice en `rag/index/` |
-| 4 | `agent.react_agent.ReActAgent` | `ARCA_THINKING_MODEL` y las de la fase 1 |
+| 4 | `agent.react_agent.ReActAgent` | `ARCA_AGENT_*` (ver `.env.example`) |
 
 Rellenad también `ARCA_TEAM` y `ARCA_DOMAIN` en `.env`: salen en `/health` y me ayudan a
 saber a quién estoy corrigiendo.

@@ -185,6 +185,12 @@ def test_custom_tolerance():
     assert strict.is_correct(answer(pct=40.1), EXPECTED_MULTI)
     assert not strict.is_correct(answer(pct=40.2), EXPECTED_MULTI)
 
+@pytest.mark.parametrize("pct", [float("nan"), float("inf"), "NaN", "nan", "-inf"])
+def test_non_finite_percentage_is_rejected(pct):
+    """Con NaN toda comparación es falsa, así que el margen de ±0,5 no lo rechazaba nunca:
+    en GRPO el modelo podía cobrar la recompensa de exactitud sin calcular el porcentaje."""
+    assert not VERIFIER.is_correct(answer(pct=pct), EXPECTED_MULTI)
+
 
 # --- contra el dataset real -------------------------------------------------------------------
 
